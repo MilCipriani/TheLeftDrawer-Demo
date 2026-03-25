@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+  --color-black: #1E1E1E;
+  --color-white: #F3F3F3;
+  --color-grey: #888888;
+  --color-pink: #E79796;
+}
+
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 500;
+  color: var(--color-black);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  width: 100vw;
+  overflow-x: hidden;
+}
+
+/*Hide scrollbar on Chrome*/
+::-webkit-scrollbar {
+  display: none;
+}
+
+/*Hide scrollbar for IE, Edge and Firefox*/
+html, body {
+  -ms-overflow-style: none;  /*IE + Edge*/
+  scrollbar-width: none;     /*Firefox*/
+}
+
+h1 {
+  font-size: 2rem;
+}
+
+.primary-button {
+  padding: 1rem 2rem;
+  background-color: var(--color-black);
+  color: var(--color-white);
+  border-radius: 15px;
+  box-shadow: 1px 10px 15px rgb(from var(--color-black) r g b / 25%);
+}
+
+input {
+  border: 1px solid var(--color-grey);
+  border-radius: 10px;
+  padding: 0.5rem;
+}
+
+
+
+@media (prefers-color-scheme: light) {
+
+}
+
+
+@media (min-width: 640px) {
+  h1 {
+    font-size: 2.4rem;
+  }
+}
+
+@media (min-width: 768px) {
+  h1 {
+    font-size: 3rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  h1 {
+    font-size: 4rem;
+  }
+}

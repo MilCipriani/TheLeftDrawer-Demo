@@ -1,0 +1,25 @@
+services:
+  backend:
+    build: null #overrides 'build: ./backend' from docker-compose.yml
+    image: node:25.2-alpine3.23 #use base image instead
+    working_dir: /app
+    volumes:
+      - ./backend:/app #mount source code for live reload
+      - backend-node-modules:/app/node_modules
+      - ./Test:/app/storage #local test storage folder
+    environment:
+      NODE_ENV: development
+    command: sh -c "npm install && npx nodemon --exec ts-node server.ts"
+
+  nginx:
+    build: null
+    image: nginx:stable-alpine3.23-perl
+    volumes:
+      - ./nginx/conf.d/default-dev.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+     - "${NETWORK_IP}:80:80"
+    extra_hosts:
+    - "host.docker.internal:host-gateway" #allows to link the frontend (before containerizing it) to nginx
+
+volumes:
+  backend-node-modules:
