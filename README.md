@@ -5,7 +5,7 @@ A self-hosted personal cloud storage system with a web interface, built to run o
 
 ## Live Demo
 
-[View here](leftdrawer-demo.milena.work)
+[Check the live demo here](https://leftdrawer-demo.milena.work)
 
 Credentials:
 - username: Demo
