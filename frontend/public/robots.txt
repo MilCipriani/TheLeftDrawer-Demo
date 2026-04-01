@@ -1,4 +1,2 @@
 User-agent: *
 Allow: /
-
-Sitemap: https://nas-demo.milena.work/sitemap.xml

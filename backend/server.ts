@@ -95,6 +95,12 @@ app.use(cors({
   allowedHeaders: ['Authorization', 'Content-Type']
 }))
 
+//no page indexing server-level
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  next();
+});
+
 app.use(express.json())  //parse JSON request bodies -> reads request, parses JSON and turns is into a js object attaching it to req.body
 app.use(cookieParser()) //HTTP only cookies - against XSS(Cross-site scripting)
 
@@ -307,10 +313,6 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 //============= REFRESH TOKEN =================
 app.post('/api/auth/refresh', async (req: Request, res: Response) => {
   const refreshToken = req.cookies.refreshToken
-
-  //TODO: check after deploy, make sure cookies are sent with no duplicates cause of different origins
-  console.log('refresh cookies:', req.cookies)
-  console.log('refresh headers:', req.headers.cookie)
 
   if (!refreshToken) {
     return res.status(401).json({ error: 'No refresh token' })
