@@ -112,6 +112,7 @@ The script is idempotent - safe to re-run, it skips files already in the databas
 
 ## Known limitations and Roadmap
 
+- [ ] 401 on page load - normal JWT behaviour, need to add a non-httpOnly non-sensitive cookie to manage refresh 
 - [ ] No option for users to change their password (add verification)
 - [ ] Move and Delete endpoints could fail, especially if a separate disk is used for storage (`fs.rename()` in the move endpoint can silently fail across filesystem boundaries)
 	- [ ] Implement soft delete and do a move endpoint revision
