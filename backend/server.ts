@@ -11,9 +11,10 @@ import rateLimit from 'express-rate-limit'
 import cookieParser from 'cookie-parser' //HTTP only cookies
 import cors from 'cors'
 import sharp from 'sharp' //image thumbnails
+import cron from 'node-cron'
 
 
-//================= TYPES ================================================================
+//================= TYPES ===========================================================================================================
 //extends Express's Request type to include your custom `user` property
 //By default Request has no `user` field
 //so req.user = result.rows[0] would throw an error
@@ -50,6 +51,7 @@ interface DbFile {
   created_at: Date
   updated_at: Date
   thumbnail_path: string | null
+  demo_file: boolean
 }
 
 //folders table -> folder row
@@ -74,7 +76,9 @@ interface RecursiveDeleteContext {
   deletedFolders: number[]
 }
 
-//========================================================================================
+
+
+//===============================================================================================================================================
 
 const app = express()
 app.set('trust proxy', 1)
@@ -125,7 +129,8 @@ if (!process.env.JWT_SECRET) {
 const JWT_SECRET: string = process.env.JWT_SECRET 
 
 
-// ============= MIDDLEWARE: Authentication =============
+
+// ============= MIDDLEWARE: Authentication ===================================================================================================
 //does the user have valid token?
 async function authenticateToken(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers['authorization']
@@ -159,6 +164,8 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
   }
 }
 
+
+
 // ============= MIDDLEWARE: folder name validation =======
 const validateFolderName = (name: unknown): boolean => {
   if (!name || typeof name !== 'string') return false 
@@ -169,7 +176,7 @@ const validateFolderName = (name: unknown): boolean => {
 } 
 
 
-// ============= REGISTRATION =============
+// ============= REGISTRATION ==================================================================================================================
 //requires admin secret —> not a public endpoint, no rate limit needed
 app.post('/api/auth/register', async (req: Request, res: Response) => {
   const adminSecret = req.headers['x-admin-secret']
@@ -235,7 +242,8 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 }) 
 
 
-// ============= LOGIN =============
+
+// ============= LOGIN ========================================================================================================================
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 })
 app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
   try {
@@ -310,7 +318,8 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 }) 
 
 
-//============= REFRESH TOKEN =================
+
+//============= REFRESH TOKEN ==================================================================================================================================
 app.post('/api/auth/refresh', async (req: Request, res: Response) => {
   const refreshToken = req.cookies.refreshToken
 
@@ -354,7 +363,8 @@ app.post('/api/auth/refresh', async (req: Request, res: Response) => {
 })
 
 
-//================== LOGOUT ====================
+
+//================== LOGOUT ==================================================================================================================================
 app.post('/api/auth/logout', async (req: Request, res: Response) => {
   try {
     const refreshToken = req.cookies.refreshToken
@@ -378,7 +388,8 @@ app.post('/api/auth/logout', async (req: Request, res: Response) => {
 })
 
 
-//======= MAKE NEW FOLDER =======
+
+//======= MAKE NEW FOLDER ========================================================================================================================================
 app.post('/api/folders', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { name, parentFolderId } = req.body as {name: string; parentFolderId: number}
@@ -435,7 +446,8 @@ app.post('/api/folders', authenticateToken, async (req: Request, res: Response) 
 }) 
 
 
-// ======= GET FOLDERS FOR 'MOVE' PATH PICKER ========
+
+// ======= GET FOLDERS FOR 'MOVE' PATH PICKER ===================================================================================================================
 app.get('/api/folders/all', authenticateToken, async (req: Request, res: Response) => {
   try {
     const result = await db.query(
@@ -450,7 +462,9 @@ app.get('/api/folders/all', authenticateToken, async (req: Request, res: Respons
   }
 }) 
 
-//===== LIST FOLDER CONTENTS ====
+
+
+//===== LIST FOLDER CONTENTS =====================================================================================================================================
 app.get('/api/folders{/:folderId}', authenticateToken, async (req: Request, res: Response) => {
   try {
     let folderId = req.params.folderId
@@ -510,6 +524,8 @@ app.get('/api/folders{/:folderId}', authenticateToken, async (req: Request, res:
 }) 
 
 
+
+// ============ UPLOAD ==============================================================================================================================
 //MULTER config for file uploads
 const storage = multer.diskStorage({
   destination: async (req: Request, file: Express.Multer.File, cb: (error: Error | null, destination: string) => void ) => {
@@ -567,12 +583,11 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 } //100MB limit
 }) 
 
-// ============ UPLOAD ============
-//rate limit: 50 uploads per IP per hour
+//rate limit: 15 uploads per IP per hour
 const uploadLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 50,
-  message: { error: 'Upload limit reached, try again later' }
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  message: { error: 'Upload limit reached, try again later' } //triggers a 429 when exceeded
 })
 
 //generate the thumbnails for images with sharp
@@ -592,7 +607,7 @@ async function generateThumbnail(filePath: string, mimeType: string, username: s
   return thumbnailPath
 }
 
-app.post('/api/files/upload', authenticateToken, uploadLimiter, upload.array('files', 20), async (req: Request, res: Response) => {
+app.post('/api/files/upload', authenticateToken, uploadLimiter, upload.array('files', 15), async (req: Request, res: Response) => {
   const client = await db.connect() 
   try {
     const { folderId } = req.body as {folderId: number}
@@ -636,7 +651,9 @@ app.post('/api/files/upload', authenticateToken, uploadLimiter, upload.array('fi
   }
 }) 
 
-//============= GET THUMBNAILS ======
+
+
+//============= GET THUMBNAILS ===============================================================================================================================
 app.get('/api/files/:id/thumbnail', authenticateToken, async (req: Request, res: Response) => {
   const result = await db.query(
     'SELECT thumbnail_path, mime_type FROM files WHERE id = $1 AND user_id = $2',
@@ -653,7 +670,8 @@ app.get('/api/files/:id/thumbnail', authenticateToken, async (req: Request, res:
 })  
 
 
-// ============ PREVIEW FILE ==========
+
+// ============ PREVIEW FILE ================================================================================================================================
 app.get('/api/files/:id', authenticateToken, async (req: Request, res: Response) => {
   try {
     if (!Number.isInteger(Number(req.params.id)))
@@ -675,7 +693,8 @@ app.get('/api/files/:id', authenticateToken, async (req: Request, res: Response)
 }) 
 
 
-// =========== DELETE (move to trash) ============
+
+// =========== DELETE (move to trash) =======================================================================================================================================
 //remove records from db, keep files in trash folder
 
 //make sure trash folder exists
@@ -698,7 +717,7 @@ async function processFolderRecursive(folderId: number, context: RecursiveDelete
   //delete all files in this folder
   const filesResult = await client.query(
     `SELECT id, file_path, filename, thumbnail_path FROM files 
-      WHERE user_id = $1 AND folder_id = $2`,
+      WHERE user_id = $1 AND folder_id = $2 AND demo_file = FALSE`,
     [userId, folderId]
   )
 
@@ -802,7 +821,7 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
     for (const fileId of fileIds) {
       const fileResult = await client.query(
         `SELECT id, file_path, filename, thumbnail_path FROM files 
-         WHERE id = $1 AND user_id = $2`,
+         WHERE id = $1 AND user_id = $2 AND demo_file = FALSE`,
         [fileId, req.user.id]
       )
 
@@ -893,7 +912,9 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
   }
 })
 
-// ============= DOWNLOAD =========
+
+
+// ============= DOWNLOAD ==============================================================================================================================================
 app.get('/api/files/:fileId/download', authenticateToken, async (req: Request, res: Response) => {
   try {
     const result = await db.query(
@@ -922,7 +943,9 @@ app.get('/api/files/:fileId/download', authenticateToken, async (req: Request, r
   }
 })
 
-// ============= MOVE FILES AND FOLDERS =============
+
+
+// ============= MOVE FILES AND FOLDERS ========================================================================================================================================
 app.post('/api/move', authenticateToken, async (req: Request, res: Response) => {
   const { fileIds = [], folderIds = [], targetFolderId } = req.body
 
@@ -972,7 +995,7 @@ app.post('/api/move', authenticateToken, async (req: Request, res: Response) => 
       if (fileIds.length > 0) {
         const filesCheck = await client.query(
           `SELECT id, file_path, filename FROM files
-           WHERE id = ANY($1::int[]) AND user_id = $2`,
+           WHERE id = ANY($1::int[]) AND user_id = $2 AND demo_file = FALSE`,
           [fileIds, req.user.id]
         )
 
@@ -1052,7 +1075,109 @@ app.post('/api/move', authenticateToken, async (req: Request, res: Response) => 
   }
 })
 
-// ============= TEST =============
+
+
+// ============= DEMO CLEANUP CRON =====================================================================================================================
+async function wipeDemoUploads(): Promise<void> {
+  const client = await db.connect()
+  try {
+    console.log('[Cron] Starting demo cleanup:', new Date().toISOString())
+
+    //get all files
+    const filesResult = await client.query(
+      `SELECT id, file_path, thumbnail_path FROM files WHERE demo_file = FALSE`
+    )
+
+    //delete from disk
+    let deletedCount = 0
+    for (const file of filesResult.rows) {
+      try {
+        await fs.unlink(file.file_path).catch(() => {})
+        if (file.thumbnail_path) {
+          await fs.unlink(file.thumbnail_path).catch(() => {})
+        }
+      } catch (err) {
+        console.error(`[Cron] Failed to delete file ${file.id}:`, err)
+      }
+    }
+
+    //delete from db
+    const deleteResult = await client.query(
+      `DELETE FROM files WHERE demo_file = FALSE`
+    )
+    deletedCount = deleteResult.rowCount ?? 0
+
+    //get folders (except root demo folder)
+    const foldersResult = await client.query(
+      `SELECT path FROM folders WHERE parent_folder_id IS NOT NULL`
+    )
+    //remove from disk
+    for (const folder of foldersResult.rows) {
+      const physicalPath = path.join('/app/storage', folder.path)
+      await fs.rm(physicalPath, { recursive: true, force: true }).catch(() => {})
+    }
+    //remove from db
+    await client.query(
+      `DELETE FROM folders WHERE parent_folder_id IS NOT NULL`
+    )
+
+    console.log(`[Cron] Cleanup done. Deleted ${deletedCount} files.`)
+  } catch (err) {
+    console.error('[Cron] Cleanup failed:', err)
+  } finally {
+    client.release()
+  }
+}
+
+//expose wipetime to frontend for timer
+let nextWipeTime: Date | null = null
+nextWipeTime = new Date(Date.now() + 30 * 60 * 1000)
+
+app.get('/api/next-wipe', (req: Request, res: Response) => {
+  res.json({ nextWipeAt: nextWipeTime })
+})
+
+/*
+┌───── minute (0-59)
+│ ┌─── hour (0-23)
+│ │ ┌─ day of month (1-31)
+│ │ │ ┌ month (1-12)
+│ │ │ │ ┌ day of week (0-6, Sun=0)
+│ │ │ │ │
+* * * * *                          */
+
+//  */30 * * * *   → every 30 minutes
+//  0 * * * *      → every hour (on the hour)
+//  0 0 * * *      → every day at midnight
+//  0 9 * * 1      → every Monday at 9am
+
+
+async function forceLogout(): Promise<void> {
+  const client = await db.connect()
+  try {
+    console.log('[Cron] Logging users out:', new Date().toISOString())
+
+    const deleteResult = await client.query(
+      `DELETE FROM refresh_tokens`
+    )
+
+    console.log(`[Cron] All users logged out.`)
+  } catch (err) {
+    console.error('[Cron] Logouts failed:', err)
+  } finally {
+    client.release()
+  }
+}
+
+cron.schedule('*/30 * * * *', () => {
+  nextWipeTime = new Date(Date.now() + 30 * 60 * 1000)
+  wipeDemoUploads()
+  forceLogout()
+})
+
+
+
+// ============= TEST =============================================================================================================================================
 //test endpoint
 app.get('/api/health', async (req: Request, res: Response) => {
   try {

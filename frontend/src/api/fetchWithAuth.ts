@@ -2,6 +2,7 @@
 //so it can be accessed by a plain function without needing hooks
 let token: string | null = null
 let logoutFn: (() => void) | null = null
+let navigateFn: ((path: string) => void) | null = null
 
 //called once from AuthContext to give this module access to auth state
 export function setupAuth(logout: () => void) {
@@ -11,6 +12,10 @@ export function setupAuth(logout: () => void) {
 //called every time the token changes in AuthContext
 export function updateToken(newToken: string | null) {
   token = newToken
+}
+
+export function setNavigate(fn: (path: string) => void) {
+  navigateFn = fn
 }
 
 //replacement for all authenticated fetch requests —> automatic auth headers and token refresh -> intercepts all 403s
@@ -36,6 +41,7 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}): Pro
     //3a) Refresh failed —> session is dead, log out
     if (!refreshResponse.ok) {
       logoutFn?.()
+      navigateFn?.('/')//kick to login page
       return response //return the original 403
     }
 
