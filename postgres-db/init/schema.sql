@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS files (
   mime_type VARCHAR(100),
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW(),
-  thumbnail_path VARCHAR(500) DEFAULT NULL
+  thumbnail_path VARCHAR(500) DEFAULT NULL,
+  demo_file BOOLEAN DEFAULT FALSE
 );
 
 --TODO: soft delete
@@ -67,7 +68,7 @@ BEFORE UPDATE ON files                          --when should it fire?
 FOR EACH ROW                                    --for each UPDATED row, not all of them
 EXECUTE FUNCTION update_updated_at();           --run 'update_updated_at' when the trigger fires
 
---The body of the function: -> doesn't want coments between &&
+--The body of the function: -> doesn't want coments between $$
 --RETURNS TRIGGER AS $$                           --$$ is a string delimiter
 --BEGIN                                           --start function body
 --    NEW.updated_at = NOW();                     --set the 'updated_at' column of the row being updated to NOW()

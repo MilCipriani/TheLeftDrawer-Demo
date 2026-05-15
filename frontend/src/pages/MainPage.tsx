@@ -4,11 +4,18 @@ import { useAuth } from '../contexts/AuthContext'
 
 import { fetchWithAuth } from '../api/fetchWithAuth' //intercepts 403s to refresh tokens
 
-import Logo from '../assets/transpLogoWhite.svg?react'
-import MenuIcon from '../assets/icons/MenuIcon.svg?react'
 import FolderIcon from '../assets/icons/FolderIcon.svg?react'
 import PreviewModal from '../components/PreviewModal'
 import ThumbnailImage from '../components/thumbnailIntersectionObserver' //lazy loading for thumbnails
+import InfoModal from '../components/InfoModal'
+import NavBar from '../components/NavBar'
+import MoveModal from '../components/MoveModal'
+import VideoIcon from '../assets/icons/video.svg?react'
+import Upload from '../assets/icons/upload.svg?react'
+import Logout from '../assets/icons/logout.svg?react'
+import MoveIcon from '../assets/icons/move.svg?react'
+import TrashIcon from '../assets/icons/trash.svg?react'
+import LoadingIcon from '../assets/icons/loadingIcon.svg?react'
 
 interface Folder {
   id: number
@@ -56,6 +63,9 @@ export default function Home() {
   //main menu
   const [menuToggler, setMenuToggler] = useState<boolean>(false)
 
+  //info modal
+  const [infoModal, setInfoModal] = useState<boolean>(true)
+
   //toast
   const [toasts, setToasts] = useState<Array<Toast>>([]);
 
@@ -84,9 +94,9 @@ export default function Home() {
 
   //move files and folders
   const [showMoveModal, setShowMoveModal] = useState(false)
-  const [allFolders, setAllFolders] = useState<Folder[]>([])
-  const [movingTo, setMovingTo] = useState<number | null>(null)
-  const [loadingFolders, setLoadingFolders] = useState(false)
+
+  //demo wipe timer
+  const [pagewipe, setPagewipe] = useState<string>('')
 
   const loadFolder = useCallback(async (folderIdParam: string | undefined): Promise<void> => {
     try {
@@ -117,6 +127,7 @@ export default function Home() {
 
   //load folders when component first renders or when you change position in the tree
   useEffect(() => {
+    //eslint-disable-next-line react-hooks/set-state-in-effect -- loadFolder is async, no cascading render risk
     loadFolder(folderId)
   }, [folderId, loadFolder])
 
@@ -132,7 +143,6 @@ export default function Home() {
     }
   }, [showMoveModal, previewIndex])
 
-  if (loading) return <p className='text-sm text-white'>Loading...</p>
 
   //make Toast (for errors and deleted message)
   const addToast = (message: string) => {
@@ -144,6 +154,40 @@ export default function Home() {
   const removeToast = (id: number) => {
     setToasts(prev => prev.filter(toast => toast.id !== id));
   };
+
+  //fetching the timer for wiping files on demo
+  const lastWipeTimeRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const fetchPageWipe = async () => {
+      try {
+        const res = await fetch('/api/next-wipe')
+        const data = await res.json()
+
+        if (lastWipeTimeRef.current && new Date(data.nextWipeAt) > new Date(lastWipeTimeRef.current)) {
+          addToast('Demo data has been wiped. Please refresh the page.')
+          return //stop updating the timer
+        }
+
+        lastWipeTimeRef.current = data.nextWipeAt
+        const formattedDate = new Date(data.nextWipeAt).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+        setPagewipe(formattedDate)
+
+      } catch (err) {
+        console.log(err)
+      }
+    }
+
+    fetchPageWipe()
+    const interval = setInterval(fetchPageWipe, 60_000) //every minute
+    return () => clearInterval(interval) //cleanup when component unmounts
+  }, [])
+
+
+  if (loading) return <p className='text-sm text-white'>Loading...</p>
 
   //make new folder
   const createFolder = async () => {
@@ -202,11 +246,10 @@ export default function Home() {
 
       if (!res.ok) throw new Error("Upload failed");
 
-      const data = await res.json();
-      console.log("Uploaded:", data.files);
       loadFolder(folderId);
     } catch (err) {
       console.error(err);
+      addToast('Failed to upload files. Did you exceed the demo limits?')
     } finally {
       setUploading(false);
       if (uploadfileInputRef.current) {
@@ -222,49 +265,6 @@ export default function Home() {
     if (selectionMode) {
       setSelectedFiles(new Set())
       setSelectedFolders(new Set())
-    }
-  }
-
-  //load folders for "move" path picker
-  const loadAllFolders = async () => {
-    setLoadingFolders(true)
-    try {
-      const response = await fetchWithAuth('/api/folders/all')
-      const data = await response.json()
-      setAllFolders(data.folders)
-    } catch (err) {
-      console.error('Failed to load folders:', err)
-    } finally {
-      setLoadingFolders(false)
-    }
-  }
-
-  const handleMove = async () => {
-    if (!movingTo) return
-
-    const fileIds = Array.from(selectedFiles)
-    const folderIds = Array.from(selectedFolders)
-
-    try {
-      const response = await fetchWithAuth('/api/move', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ fileIds, folderIds, targetFolderId: movingTo })
-      })
-
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error)
-
-      setShowMoveModal(false)
-      setSelectedFiles(new Set())
-      setSelectedFolders(new Set())
-      setSelectionMode(false)
-      setMovingTo(null)
-      loadFolder(folderId)
-    } catch (err) {
-      addToast(`Move failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
   }
 
@@ -327,13 +327,7 @@ export default function Home() {
         throw new Error(data.error || 'Failed to delete items')
       }
 
-      console.log('Delete successful:', data)
       addToast(`Delete successful: ${data.message}`)
-
-      //clear selections and exit selection mode
-      setSelectedFiles(new Set())
-      setSelectedFolders(new Set())
-      setSelectionMode(false)
 
       //refresh current folder
       await loadFolder(folderId)
@@ -341,6 +335,11 @@ export default function Home() {
     } catch (error) {
       console.error('Delete error:', error)
       addToast(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      //clear selections and exit selection mode
+      setSelectedFiles(new Set())
+      setSelectedFolders(new Set())
+      setSelectionMode(false)
     }
   }
 
@@ -358,70 +357,87 @@ export default function Home() {
 
 
   return (
-    <main className="h-full w-full flex flex-col items-center justify-start py-16 px-4 sm:px-16 gap-16">
+    <main className="h-full w-full flex flex-col items-center justify-start pt-16 pb-36 px-4 sm:px-16 2xl:px-64 gap-12">
+
+      {/*LOADING ICON*/}
+      {uploading && (
+        <LoadingIcon className='w-6 h-6 fixed top-4 left-4 animate-spin'/>
+      )}
 
       {/*NAVBAR*/}
-      <nav className='w-full flex items-center justify-between'>
-        <div className='flex items-center justify-center gap-4 sm:gap-8'>
-          <Logo className='main-logo shrink-0 cursor-pointer' onClick={() => navigate(`/${user}`)}/>
-          <h1 className='main text-white font-light'>{(currentFolder?.name!== user) ? currentFolder?.name : 'Welcome to your left drawer!'}</h1>
-        </div>
-        
-      </nav>
+      <div className='sticky top-4 flex flex-col z-30'>
+        <NavBar onLogo={() => navigate(`/${user}`)} onMenu={()=> setMenuToggler(!menuToggler)}/>
+        {menuToggler && (
+          <>
+            {/*invisible overlay behind the menu but on top ov everything else to catch outside clicks*/}
+            <div className='fixed inset-0 z-[-1]' onClick={() => setMenuToggler(false)} />
+            
+            <div className='absolute top-5 pt-7 pb-4 px-5 left-0 w-full flex flex-col items-start justify-center gap-2 bg-orange rounded-b-4xl z-0'>
+              <button className='cursor-pointer flex gap-2' onClick={() => {setMenuToggler(false); setNewFolderShowModal(true)}}><FolderIcon className='w-6 h-6'/>New folder</button>
+              <input className='cursor-pointer' type="file" ref={uploadfileInputRef} multiple onChange={(e) => { setMenuToggler(false); handleUpload(e)}} style={{ display: "none" }}/>
+              <button className='cursor-pointer flex gap-2' onClick={() => uploadfileInputRef.current?.click()} disabled={uploading}><Upload className='w-6 h-6'/>{uploading ? 'Uploading...' : 'Upload file'}</button>
+              <button className='text-red-600 cursor-pointer flex gap-2' onClick={async () => {await logout(); navigate('/')}}><Logout className='w-6 h-6'/>Logout</button>
+            </div>
+          </>
+        )}
+      </div>
 
-      {/*DOTS MENU*/}
-      {!menuToggler && (
-        <button className='z-20 bg-white rounded-full p-4 w-16 aspect-square flex items-center justify-center fixed bottom-16 right-4 sm:right-16 cursor-pointer' onClick={() => setMenuToggler(true)}>
-          <MenuIcon className='text-black'/>
+
+      {/*<p className='text-left w-full text-sm'>bread &gt; crumb &gt; here &gt; TODO</p>*/}
+
+      <p className='bg-white px-4 py-2 rounded-3xl sticky top-16 text-center'>Full data wipe<br/> at {pagewipe}</p>
+
+      {/*SELECTION MODE TOGGLE*/}
+      <button className='cursor-pointer ml-auto flex gap-1 place-items-center' onClick={()=>toggleSelectionMode()}>
+        <p>Selection mode</p>
+        <div className={`w-6 h-6 border-5 ${selectionMode? 'border-cyan-300' : 'border-black'} bg-black rounded-full ml-auto`}></div>
+      </button>
+
+      {/*INFO BUTTON*/}
+      {!infoModal && (
+        <button className='z-20 bg-black rounded-full w-16 aspect-square flex items-center justify-center fixed bottom-8 left-4 sm:left-16 2xl:left-64 cursor-pointer' onClick={() => setInfoModal(true)}>
+          <p className='text-blue-400 font-serif text-5xl'>i</p>
         </button>
       )}
-      
 
-      {menuToggler && (
-        <div className='fixed z-50 bottom-16 right-4 sm:right-16 flex flex-col items-start justify-center px-8 py-4 gap-4 sm:gap-3 bg-white rounded-2xl'>
-          <button className='cursor-pointer pr-6'  onClick={() => {setMenuToggler(false); setNewFolderShowModal(true)}}>New folder</button>
-
-          <input type="file" ref={uploadfileInputRef} multiple onChange={(e) => { setMenuToggler(false); handleUpload(e)}} style={{ display: "none" }}/>
-          <button className='cursor-pointer pr-6' onClick={() => uploadfileInputRef.current?.click()} disabled={uploading}>
-            {uploading ? 'Uploading...' : 'Upload file'}
-          </button>
-
-          <button className='cursor-pointer pr-6' onClick={() => {setMenuToggler(false); toggleSelectionMode()}}>Selection</button>
-          <hr className='border-gray-300 w-full'></hr>
-          <button className='cursor-pointer pr-6' onClick={async () => {await logout(); navigate('/')}}>Logout</button>
-          <hr className='border-gray-300 w-full'></hr>
-          <button className='text-red-500 cursor-pointer pr-6' onClick={() => setMenuToggler(false)}>Cancel</button>
-        </div>
+      {infoModal && (
+        <InfoModal onClose={()=>setInfoModal(false)}/>
       )}
 
+      {/*NEW FOLDER NAME MODAL*/}
       {showNewFolderModal && (
-        <div className='fixed z-50 bottom-16 right-4 sm:right-16 flex flex-col items-start justify-center px-8 py-4 gap-4 sm:gap-3 bg-white rounded-2xl'>
-          <p className=''>How will you name your folder?</p>
-          <input 
-            type='text' 
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && createFolder()}
-          />
-          {folderError && (
-            <p className='text-red-500'>{folderError}</p>
-          )}
-          <div className='flex items-center justify-between w-full'>
-            <button className='text-red-500 cursor-pointer' onClick={() => {setNewFolderShowModal(false); setFolderError('')}}>Cancel</button>
-            <button className='cursor-pointer pr-4' onClick={createFolder}>Ok</button>
-          </div> 
+        <div className='z-50 fixed inset-0 w-full h-full flex flex-col items-center bg-black/50 backdrop-blur-sm'>
+          <div className='w-fit h-full flex flex-col items-center justify-center px-8 py-4 gap-4'>
+            <p className='text-white'>Name your new folder</p>
+            <input 
+              type='text' 
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && createFolder()}
+              autoFocus
+            />
+            {folderError && (
+              <p className='text-red-500'>{folderError}</p>
+            )}
+            <div className='flex items-center justify-between w-full'>
+              <button className='text-red-500 cursor-pointer bg-white rounded-4xl py-2 px-4' onClick={() => {setNewFolderShowModal(false); setFolderError('')}}>Cancel</button>
+              <button className='cursor-pointer text-white bg-black py-2 px-4 rounded-4xl' onClick={createFolder}>Create</button>
+            </div>
+          </div>
+           
         </div>
       )}
 
+      {/*SELECTION OPTIONS*/}
       {selectionMode && (
-        <div className='fixed z-50 bottom-16 right-4 sm:right-16 flex flex-col items-start justify-center px-8 py-4 gap-4 sm:gap-3 bg-white rounded-2xl'>
-          <p className=''>{selectionCount>0 ? `${selectionCount} element(s) selected` : 'Select your files and folders...'}</p>
-          <div className='flex items-center justify-around w-full'>
+        <div className='fixed z-50 bottom-16 right-1/2 translate-x-1/2 flex flex-col items-start justify-center px-4 pt-2 pb-4 gap-4 bg-orange rounded-2xl'>
+          <p className='w-full text-sm text-dark-orange text-center'>{selectionCount>= 0 && `${selectionCount} element(s) selected`}</p>
+          <div className='flex gap-1 items-center justify-around w-full'>
             {selectionMode && hasSelections && (
-              <button className='cursor-pointer pr-4' onClick={() => { loadAllFolders(); setShowMoveModal(true) }}>Move</button>
+              <button className='flex gap-1 items-center justify-center cursor-pointer pr-4' onClick={() => { setShowMoveModal(true); setSelectionMode(false) }}><MoveIcon className='w-6 h-6'/> Move</button>
             )}
             {selectionMode && hasSelections && (
-              <button className='cursor-pointer pr-4' onClick={() => {setShowDeleteConfirm(true); setSelectionMode(false)}}>Delete</button>
+              <button className='flex gap-1 items-center justify-center cursor-pointer pr-4' onClick={() => {setShowDeleteConfirm(true)}}><TrashIcon className='w-5 h-5'/>Delete</button>
             )}
             <button className='text-red-500 cursor-pointer' onClick={toggleSelectionMode}>Cancel</button>
 
@@ -430,54 +446,54 @@ export default function Home() {
       )}
 
       {showDeleteConfirm && (
-        <div className='fixed z-50 bottom-16 right-4 sm:right-16 flex flex-col items-start justify-center px-8 py-4 gap-4 sm:gap-3 bg-white rounded-2xl'>
+        <div className='fixed z-50 bottom-16 right-1/2 translate-x-1/2 flex flex-col items-start justify-center px-4 pt-2 pb-4 gap-4 bg-orange rounded-2xl'>
           <p className=''>You are about to permanently delete all the selected items.</p>
           <p className=''>Are you sure?</p>
           <div className='flex items-center justify-between w-full'>
-            <button className='text-red-500 cursor-pointer' onClick={() => {setShowDeleteConfirm(false); setSelectionMode(true)}}>Cancel</button>
+            <button className='text-red-500 cursor-pointer' onClick={() => {setShowDeleteConfirm(false)}}>Cancel</button>
             <button className='cursor-pointer'onClick={() => {handleDelete(); setShowDeleteConfirm(false)}}>Yes</button>
           </div>
         </div>
       )}
 
       {/*TOASTS*/}
-      <div className='fixed bottom-0 left-0 p-8 flex flex-col-reverse w-full max-w-150 text-sm gap-4'>
-        {toasts.map(toast => (
-          <div
-            key={toast.id}
-            className="flex items-center justify-between w-full h-24 p-8 bg-white rounded-2xl"
-          >
-            <p>{toast.message}</p>
-            <button
-              className="p-4 cursor-pointer"
-              onClick={() => removeToast(toast.id)}
+      {toasts.length > 0 && (
+        <div className='fixed z-50 bottom-0 left-0 p-8 flex flex-col-reverse w-full max-w-150 text-sm gap-4'>
+          {toasts.map(toast => (
+            <div
+              key={toast.id}
+              className="flex items-center justify-between w-full h-24 p-8 bg-[#ffffff] rounded-2xl"
             >
-              x
-            </button>
-          </div>
-        ))}
+              <p>{toast.message}</p>
+              <button
+                className="p-4 cursor-pointer"
+                onClick={() => removeToast(toast.id)}
+              >
+                x
+              </button>
+            </div>
+          ))}
 
-      </div>
+        </div>
+      )}
+      
       {/*FOLDERS AND FILES*/}
-      <div className="grid
-                      grid-cols-[repeat(auto-fill,minmax(104px,1fr))]
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))]
                       sm:grid-cols-[repeat(auto-fill,minmax(128px,1fr))]
-                      gap-1
-                      w-full">
-
+                      gap-1 w-full">
 
         {folders.map(folder => (
           <div
             onClick={() => handleFolderClick(folder)}
             key={folder.id}
-            className={`relative justify-self-center rounded-[2.5rem] sm:rounded-[3rem] w-full aspect-square cursor-pointer hover:opacity-80 transition-opacity overflow-hidden ${
-              selectedFolders.has(folder.id) ? 'ring-4 ring-blue-500' : ''
-            }`}>
+            className={`relative justify-self-center rounded-sm w-full aspect-square cursor-pointer hover:opacity-80 transition-opacity overflow-hidden bg-orange
+              ${ selectedFolders.has(folder.id) ? 'ring-4 ring-cyan-400' : '' }
+            `}>
 
-            <FolderIcon className="w-full h-full" preserveAspectRatio="none" />
+            <FolderIcon className="w-full h-full text-dark-orange" preserveAspectRatio="none" />
 
             <span style={{display: '-webkit-box'}}
-              className="absolute top-14 left-2 right-2 wrap-break-word overflow-hidden block line-clamp-2 text-white text-start">
+              className="absolute top-14 left-2 right-2 px-3 wrap-break-word overflow-hidden block line-clamp-2 text-black text-start">
               {folder.name}
             </span>
           </div>
@@ -488,20 +504,24 @@ export default function Home() {
           <div
             key={file.id}
             onClick={() => handleFileClick(file)}
-            className={`justify-self-center rounded-[2.5rem] sm:rounded-[3rem] w-full aspect-square cursor-pointer hover:opacity-80 transition-opacity overflow-hidden ${
-              selectedFiles.has(file.id) ? 'ring-4 ring-blue-500' : ''
+            className={`justify-self-center rounded-sm w-full aspect-square cursor-pointer hover:opacity-80 transition-opacity overflow-hidden ${
+              selectedFiles.has(file.id) ? 'ring-4 ring-cyan-400' : ''
             }`}
           >
             {file.mime_type.startsWith('image/')
-              ? <ThumbnailImage fileId={file.id} alt={file.original_filename} />
-              : <div className="bg-white p-4 w-full h-full flex items-end justify-start">
-                  <span className="truncate w-full">{file.original_filename}</span>
-                </div>
-            }
+            ? <ThumbnailImage fileId={file.id} alt={file.original_filename} />
+            : file.mime_type.startsWith('video/')
+            ? <div className="bg-black w-full h-full flex items-center justify-center">
+                <VideoIcon className="w-10 h-10 text-white opacity-70" />
+              </div>
+            : <div className="bg-white p-4 w-full h-full flex items-end justify-start">
+                <span className="truncate w-full">{file.original_filename}</span>
+              </div>
+          }
           </div>
         ))}
         {folders.length === 0 && files.length === 0 &&(
-          <p className='text-white text-start col-span-2'>This folder is empty :(</p>
+          <p className='text-black text-start col-span-2'>This folder is empty :(</p>
         )}
         
       </div>
@@ -516,39 +536,21 @@ export default function Home() {
         />
       )}
 
-      {showMoveModal && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm p-4 text-white overflow-hidden" onClick={() => setShowMoveModal(false)}>
-          <div className="w-full h-full flex flex-col gap-16 p-2 items-center justify-center bg-black rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()}>
-            <h2>Move to...</h2>
-            {loadingFolders ? (
-              <p className='text-white font-light'>Loading folders...</p>
-            ) : (
-              <ul className="overflow-auto w-full max-w-200 min-h-0 flex-1 max-h-96 flex flex-col gap-1">
-                {allFolders
-                  //don't show the currently selected folders as destinations
-                  .filter(f => !Array.from(selectedFolders).includes(f.id))
-                  //don't show the current folder
-                  .filter(f => f.id !== currentFolder?.id)
-                  .map(f => (
-                    <li
-                      key={f.id}
-                      className={`rounded-xl p-2 cursor-pointer ${movingTo === f.id ? 'bg-white text-black' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
-                      onClick={() => setMovingTo(f.id)}
-                    >
-                      {f.path}
-                    </li>
-                  ))}
-              </ul>
-            )}
-            <div className="flex gap-8">
-              <button onClick={() => setShowMoveModal(false)} className='p-4 cursor-pointer text-sm px-4 py-2 rounded-xl transition-colors bg-blue-500 text-white hover:bg-blue-600'>Cancel</button>
-              <button onClick={handleMove} disabled={!movingTo} className='p-4 cursor-pointer text-sm px-4 py-2 rounded-xl transition-colors bg-red-500 text-white hover:bg-red-600'>
-                Move here
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+
+    {/*MOVE MODAL*/}
+
+    {showMoveModal && (
+      <MoveModal
+        selectedFolders={selectedFolders}
+        selectedFiles={selectedFiles}
+        setShowMoveModal={setShowMoveModal} 
+        folderId= {folderId}        
+        setSelectedFolders={setSelectedFolders}
+        setSelectedFiles={setSelectedFiles}
+        setSelectionMode={setSelectionMode}
+        loadFolder={loadFolder}
+        addToast={addToast} />
+    )}
 
     </main>
   )

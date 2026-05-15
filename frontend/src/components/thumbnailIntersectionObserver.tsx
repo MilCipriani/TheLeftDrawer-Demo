@@ -60,8 +60,8 @@ export default function ThumbnailImage({ fileId, alt }: { fileId: string; alt: s
   return (
     <div ref={containerRef} className="w-full h-full">
       {blobUrl
-        ? <img src={blobUrl} alt={alt} className="w-full h-full object-cover rounded-[2.5rem] sm:rounded-[3rem]" />
-        : <div className="w-full h-full bg-gray-200 animate-pulse rounded-[2.5rem] sm:rounded-[3rem]" />
+        ? <img src={blobUrl} alt={alt} className="w-full h-full object-cover" />
+        : <div className="w-full h-full bg-gray-200 animate-pulse" />
       }
     </div>
   )

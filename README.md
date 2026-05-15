@@ -32,7 +32,7 @@ When a user triggers an API request from the browser:
 
 When physical file storage is required, the API first queries the database to determine the relevant file metadata, then it retrieves the corresponding files from storage.
 
->This is the architecture on my self-hosted project. The Demo lives on a VPS, with sample data. I'm way less concerned about security in that environment, so ZeroTier is not present and NGINX forwards port 80 to my subdomain.
+> This is the architecture on my self-hosted project. The Demo lives on a VPS, with sample data. I'm way less concerned about security in that environment, so ZeroTier is not present and NGINX forwards port 80 to my subdomain.
 
 
 ## Features
@@ -105,7 +105,7 @@ If you want to test with a personal domain you can change `server_name` in NGINX
 Users are registered the same way as dev.
 
 If you want to populate the app with files already on disk, a utility script is included. Edit the username at the top of `scripts/importFiles.js` and, after you copied your files to the storage folder, run: 
-```
+```bash
 docker compose exec backend node scripts/importFiles.js
 ```
 The script is idempotent - safe to re-run, it skips files already in the database.
