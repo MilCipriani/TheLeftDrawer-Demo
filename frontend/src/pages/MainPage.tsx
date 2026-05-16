@@ -437,7 +437,7 @@ export default function Home() {
               <button className='flex gap-1 items-center justify-center cursor-pointer pr-4' onClick={() => { setShowMoveModal(true); setSelectionMode(false) }}><MoveIcon className='w-6 h-6'/> Move</button>
             )}
             {selectionMode && hasSelections && (
-              <button className='flex gap-1 items-center justify-center cursor-pointer pr-4' onClick={() => {setShowDeleteConfirm(true)}}><TrashIcon className='w-5 h-5'/>Delete</button>
+              <button className='flex gap-1 items-center justify-center cursor-pointer pr-4' onClick={() => {setShowDeleteConfirm(true); setSelectionMode(false)}}><TrashIcon className='w-5 h-5'/>Delete</button>
             )}
             <button className='text-red-500 cursor-pointer' onClick={toggleSelectionMode}>Cancel</button>
 
@@ -514,7 +514,7 @@ export default function Home() {
             ? <div className="bg-black w-full h-full flex items-center justify-center">
                 <VideoIcon className="w-10 h-10 text-white opacity-70" />
               </div>
-            : <div className="bg-white p-4 w-full h-full flex items-end justify-start">
+            : <div className="bg-[#ffffff] p-4 w-full h-full flex items-end justify-start">
                 <span className="truncate w-full">{file.original_filename}</span>
               </div>
           }
