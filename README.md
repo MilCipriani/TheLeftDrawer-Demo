@@ -88,21 +88,27 @@ cd frontend/
 npm install
 npm run dev
 
-#register a user with:
-curl -X POST http://localhost/api/auth/register -H "Content-Type: application/json" -H "x-admin-secret: your_admin_secret" -d '{"username": "testuser", "password": "password123"}'
 #access the app at http://localhost (everything goes through NGINX port 80)
 ```
 
-**Production:**
+**Production (self-hosting without SSL -> private networks only):**
+
+After cloning the repo and fixing the .env file start all the services at once:
+```bash
+docker compose -f docker-compose.yml -f docker-compose-selfhost.yml up -d --build
+```
+And access the app at http://localhost.
+
+**Production (with SSL -> personal domain required):**
 
 After cloning the repo and fixing the .env file start all the services at once:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose-prod.yml up -d --build
 ```
-And access the app at http://localhost.
-If you want to test with a personal domain you can change `server_name` in NGINX's default.conf and enable `SECURE_COOKIES` in the .env file.
+Enable `SECURE_COOKIES` in the .env file.
 
-Users are registered the same way as dev.
+#register a user with:
+curl -X POST http://localhost/api/auth/register -H "Content-Type: application/json" -H "x-admin-secret: your_admin_secret" -d '{"username": "testuser", "password": "password123"}'
 
 If you want to populate the app with files already on disk, a utility script is included. Edit the username at the top of `scripts/importFiles.js` and, after you copied your files to the storage folder, run: 
 ```bash
