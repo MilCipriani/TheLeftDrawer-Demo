@@ -3,7 +3,7 @@ services:
 
   nginx:
     volumes:
-      - ./nginx/templates/default.ssl.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/templates/default.http.conf:/etc/nginx/conf.d/default.conf:ro
     environment:
       - DOMAIN=${DOMAIN}
     ports:
