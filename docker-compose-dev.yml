@@ -15,7 +15,7 @@ services:
     build: null
     image: nginx:stable-alpine3.23-perl
     volumes:
-      - ./nginx/templates/default.dev.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/templates/default.dev.conf.template:/etc/nginx/templates/default.conf.template:ro
     environment:
       - DOMAIN=${DOMAIN}
     ports:
