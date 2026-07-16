@@ -68,8 +68,20 @@ I chose the blob URL approach, with an IntersectionObserver to avoid firing too 
 Async effects use a cancel flag - if the component unmounts or dependencies change before a fetch completes, the result is discarded and no state update occurs.
 ### Infrastructure
 
-Multi-container setup with Docker Compose: Nginx, Express, PostgreSQL, and a multi-stage frontend build (React bundle baked into the Nginx image). Dev and prod environments share a base compose file with a dev override that swaps the backend for a nodemon/ts-node live-reload setup and proxies the frontend to the Vite dev server on the host.
+Multi-container setup with Docker Compose: Nginx, Express, PostgreSQL, and a multi-stage frontend build (React bundle baked into the Nginx image). Dev and prod environments share a base compose file with a dev override that swaps the backend for a nodemon/ts-node live-reload setup and proxies the frontend to the Vite dev server on the host. The dev override creates an additional PostgreSQL container, used by integration tests.
 Noteworthy debugging: PostgreSQL 18 changed its default data directory from /var/lib/postgresql/data to a versioned path, causing data to be wiped on every restart. Diagnosed from container logs, fixed by explicitly setting PGDATA.
+### Testing
+
+Stack: `Vitest`, `Supertest`
+
+Unit tests cover pure validation logic (folder name validation, username validation, and storage path safety checks) extracted into a standalone `validators.ts` module specifically so they can be tested without pulling in Express, the database pool, or any other app machinery.
+Integration tests run against a real, isolated Postgres instance (a second container, `test_postgres_db`, only present in the dev Docker Compose override) and cover the authentication flow end to end: registration (including duplicate-username and missing-admin-secret rejection), login (valid credentials, wrong password, non-existent user), and the JWT auth middleware itself (expired tokens, malformed headers, garbage tokens, and tokens signed for users that no longer exist in the database). The login and non-existent-user cases intentionally assert on identical error messages, verifying the app doesn't leak whether a given username exists.
+`app.ts` and `server.ts` are split specifically to support this: `app.ts` exports the Express app with no side effects, `server.ts` is the only place that calls `app.listen()`. This means importing the app for tests never binds a real port.
+
+Run tests inside the backend container, where test environment variables are available:
+```bash
+docker compose -f docker-compose.yml -f docker-compose-dev.yml exec backend npm run test
+```
 
 
 ## How to run this project
@@ -89,6 +101,11 @@ npm install
 npm run dev
 
 #access the app at http://localhost (everything goes through NGINX port 80)
+```
+
+Run the backend test suite (dev only) with:
+```bash
+docker compose -f docker-compose.yml -f docker-compose-dev.yml exec backend npm run test
 ```
 
 **Production (self-hosting without SSL -> private networks only):**
@@ -122,5 +139,6 @@ The script is idempotent - safe to re-run, it skips files already in the databas
 - [ ] No option for users to change their password (add verification)
 - [ ] Move and Delete endpoints could fail, especially if a separate disk is used for storage (`fs.rename()` in the move endpoint can silently fail across filesystem boundaries)
 	- [ ] Implement soft delete and do a move endpoint revision
+- [ ] Test coverage is currently focused on auth (registration, login, middleware) and input validation
 - [ ] Currently I have no observability, all the checks are manual
 	- [ ] Pino, Grafana, Prometheus could all be valid options
