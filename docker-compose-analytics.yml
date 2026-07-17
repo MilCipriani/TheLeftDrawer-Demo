@@ -1,0 +1,13 @@
+name: nas
+services:
+
+  nginx:
+    volumes:
+      - ./nginx/templates/stats.ssl.conf.template:/etc/nginx/templates/stats.conf.template:ro
+      - ${HTPASSWD_PATH}:/etc/nginx/.htpasswd:ro
+    networks:
+      - analytics
+      
+networks:
+  analytics:
+    external: true

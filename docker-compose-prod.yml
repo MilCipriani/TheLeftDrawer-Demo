@@ -3,7 +3,7 @@ services:
 
   nginx:
     volumes:
-      - ./nginx/templates/default.ssl.conf.template:/etc/nginx/templates/default.conf:ro
+      - ./nginx/templates/default.ssl.conf.template:/etc/nginx/templates/default.conf.template:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     environment:
       - DOMAIN=${DOMAIN}

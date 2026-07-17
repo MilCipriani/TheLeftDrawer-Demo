@@ -60,6 +60,7 @@ volumes:
 
 networks:
   nas:
+    name: nas
 
 
 #TODO: check amount of memory used by containers and verify limits
