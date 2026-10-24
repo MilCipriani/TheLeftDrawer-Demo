@@ -30,49 +30,14 @@ declare global {
   }
 }
 
-//users table -> user row
-interface DbUser {
-  id: number
-  username: string
-  password_hash: string
-  created_at: Date
-}
-
-//files table -> file row
-interface DbFile {
-  id: number
-  user_id: number
-  filename: string
-  original_filename: string
-  file_path: string
-  file_size: number
-  folder_id: number | null
-  mime_type: string
-  created_at: Date
-  updated_at: Date
-  thumbnail_path: string | null
-  demo_file: boolean
-}
-
-//folders table -> folder row
-interface DbFolder {
-  id: number
-  user_id: number
-  name: string
-  parent_folder_id: number | null
-  path: string
-  created_at: Date
-}
-
 //the object passed into processFolderRecursive
 //PoolClient is pg's type for a checked-out DB connection
 import type { PoolClient } from 'pg'
 import { validateFolderName, validateStoragePath, validateUsername } from './validators'
 
-interface RecursiveDeleteContext {
+interface RecursiveSoftDeleteContext {
   client: PoolClient
   userId: number
-  trashPath: string
   movedFiles: Array<{ id: number; name: string }>
   deletedFolders: number[]
 }
@@ -84,9 +49,7 @@ interface RecursiveDeleteContext {
 const app = express()
 app.set('trust proxy', 1)
 
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : []
+const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : []
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -100,14 +63,14 @@ app.use(cors({
   allowedHeaders: ['Authorization', 'Content-Type']
 }))
 
-//no page indexing server-level
+//no page indexing server-level as it's a open Demo
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.set('X-Robots-Tag', 'noindex, nofollow');
   next();
 });
 
-app.use(express.json())  //parse JSON request bodies -> reads request, parses JSON and turns is into a js object attaching it to req.body
-app.use(cookieParser()) //HTTP only cookies - against XSS(Cross-site scripting)
+app.use(express.json())  //parse JSON request bodies -> reads request, parses JSON and turns it into a js object attaching it to req.body
+app.use(cookieParser()) //HTTP only cookies against XSS(Cross-site scripting)
 
 //global rate limiter: max 5000 requests per IP every 15mins on all routes
 const globalLimiter = rateLimit({
@@ -134,6 +97,7 @@ const JWT_SECRET: string = process.env.JWT_SECRET
 // ============= MIDDLEWARE: Authentication ===================================================================================================
 //does the user have valid token?
 async function authenticateToken(req: Request, res: Response, next: NextFunction): Promise<void> {
+//extract token from req auth headers
   const authHeader = req.headers['authorization']
   const token = authHeader && authHeader.split(' ')[1] //expected format: "Bearer TOKEN"
 
@@ -143,7 +107,7 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
   }
 
   try {
-    //verify the token and extract user info
+//verify the token and extract user info
     const decoded = jwt.verify(token, JWT_SECRET, {
       algorithms: ["HS256"],
     }) as jwt.JwtPayload
@@ -170,6 +134,7 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
 // ============= REGISTRATION ==================================================================================================================
 //requires admin secret —> not a public endpoint, no rate limit needed
 app.post('/api/auth/register', async (req: Request, res: Response) => {
+//check admin secret
   const adminSecret = req.headers['x-admin-secret']
   if (adminSecret !== process.env.ADMIN_SECRET) {
     return res.status(403).json({ error: 'Registration is not open' })
@@ -177,7 +142,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body as {username: string; password: string} 
 
-    //basic validation
+  //credentials validation
     if (!username || !password) {
       return res.status(400).json({ error: 'All fields required' }) 
     }
@@ -189,10 +154,10 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Username can only contain letters, numbers, underscores and dashes' }) 
     }
 
-    //hash the password (10 salt rounds is standard)
+  //hash the password (10 salt rounds is standard)
     const passwordHash = await bcrypt.hash(password, 10) 
 
-    //add user to db
+  //add user to db
     const result = await db.query(
       'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username, created_at',
       [username, passwordHash]
@@ -200,13 +165,13 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
     const user = result.rows[0] 
 
-    //make user folder on db
+  //make user folder on db
     await db.query(
       'INSERT INTO folders (user_id, name, parent_folder_id, path) VALUES ($1, $2, NULL, $3)',
       [user.id, username, `/${username}`]
     ) 
 
-    //make actual folder on the SSD
+  //make actual folder on the SSD
     const userDir = path.join('/app/storage', username) 
     if (!validateStoragePath(userDir)) {
       return res.status(400).json({ error: 'Registration error: Invalid user folder path' }) 
@@ -223,7 +188,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
     console.error('Registration error:', err) 
     const pgErr = err as { code?: string }
     
-    //handle duplicate username
+  //handle duplicate username
     if (pgErr.code === '23505') { //postgres unique violation code
       return res.status(409).json({ error: 'Registration error: Username already exists' }) 
     }
@@ -237,6 +202,7 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 // ============= LOGIN ========================================================================================================================
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 })
 app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
+//receive credentials
   try {
     const { username, password } = req.body as {username: string; password: string}
 
@@ -244,7 +210,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
       return res.status(400).json({ error: 'Login error: Username and password required' }) 
     }
 
-    //find user in database
+//find user in database
     const result = await db.query(
       'SELECT * FROM users WHERE username = $1',
       [username]
@@ -256,21 +222,21 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 
     const user = result.rows[0] 
 
-    //compare password with hash
+//compare password with hash
     const validPassword = await bcrypt.compare(password, user.password_hash) 
 
     if (!validPassword) {
       return res.status(401).json({ error: 'Login error: Invalid credentials' }) 
     }
 
-    //assign access token -> short-lived JWT
+//assign access token -> short-lived JWT
     const accessToken = jwt.sign(
       { sub: user.id }, //payload = data I want int the token
       JWT_SECRET,
       { expiresIn: '5m', algorithm: 'HS256' }
     )
 
-    //create refresh token -> random bytes, not a JWT, hashed
+//create refresh token -> random bytes, not a JWT, hashed
     const refreshToken = crypto.randomBytes(64).toString('hex')
     const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex')
 
@@ -280,7 +246,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
       [user.id, tokenHash]
     )
 
-    //path scopes the cookie to only be sent to auth endpoints
+//path scopes the cookie to only be sent to auth endpoints
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.SECURE_COOKIES === 'true', //false in dev or local networks, only sent via HTTPS, prevents Man-in-the-Middle
@@ -289,7 +255,7 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
       path: '/api/auth' //cookie only sent to /api/auth*
     })
 
-    //cleanup expired refresh tokens from db if any
+//cleanup expired refresh tokens from db if any
     await db.query(
       `DELETE FROM refresh_tokens
       WHERE expires_at < NOW() AND user_id = $1`,
@@ -312,20 +278,21 @@ app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) =>
 
 //============= REFRESH TOKEN ==================================================================================================================================
 app.post('/api/auth/refresh', async (req: Request, res: Response) => {
+//get current REFRESH token (30days) from cookies
   const refreshToken = req.cookies.refreshToken
 
   if (!refreshToken) {
     return res.status(401).json({ error: 'No refresh token' })
   }
 
+//turn cookie into hash and compare with db
   try {
     const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex')
     //createHash makes an object that can transform strings using the sha256 algorithm (hash instance)
-    //update feeds refreshToken to the hash object
+    //update feeds `refreshToken` to the hash object
     //digest finalizes the process and picks the encoding (hex)
 
     //is this token still valid and not expired?
-    //compare refresh_token ans users tables, give me the user that has the token I'm checking now
     const result = await db.query(
       `SELECT rt.user_id, u.username
        FROM refresh_tokens rt
@@ -337,7 +304,7 @@ app.post('/api/auth/refresh', async (req: Request, res: Response) => {
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid or expired refresh token' })
     }
-
+//create new JWT ACCESS token (5min)
     const { user_id, username } = result.rows[0]
 
     const accessToken = jwt.sign(
@@ -345,7 +312,7 @@ app.post('/api/auth/refresh', async (req: Request, res: Response) => {
       JWT_SECRET,
       { expiresIn: '5m', algorithm: 'HS256' }
     )
-
+//send to browser
     res.json({ accessToken, user: { id: user_id, username } })
   } catch (err) {
     console.error('Refresh error:', err)
@@ -358,18 +325,18 @@ app.post('/api/auth/refresh', async (req: Request, res: Response) => {
 //================== LOGOUT ==================================================================================================================================
 app.post('/api/auth/logout', async (req: Request, res: Response) => {
   try {
+//delete refresh token from DB
     const refreshToken = req.cookies.refreshToken
 
     if (refreshToken) {
       const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex')
-      //delete refresh token from DB
       await db.query(
         'DELETE FROM refresh_tokens WHERE token_hash = $1',
         [tokenHash]
       )
     }
 
-    //delete cookie from browser
+//delete cookie from browser
     res.clearCookie('refreshToken', { path: '/api/auth' })
     res.json({ message: 'Logged out' })
   } catch (err) {
@@ -395,7 +362,7 @@ app.post('/api/folders', authenticateToken, async (req: Request, res: Response) 
     if (parentFolderId) {
       //get parent folder
       const parent = await db.query(
-        'SELECT path FROM folders WHERE id = $1 AND user_id = $2',
+        'SELECT path FROM folders WHERE id = $1 AND user_id = $2 AND deleted = FALSE',
         [parentFolderId, req.user.id]
       ) 
       
@@ -412,20 +379,25 @@ app.post('/api/folders', authenticateToken, async (req: Request, res: Response) 
       )
       parentPath = root.rows[0].path
     }
-    const fullPath = `${parentPath}/${name}` 
+    const fullPath = `${parentPath}/${name}`
+    const physicalPath = path.join('/app/storage', fullPath)
+    if (!validateStoragePath(physicalPath)) {
+      return res.status(400).json({ error: 'Error making a new folder: Invalid path' })
+    }
     
     //insert into db
-    const result = await db.query(
+    let result
+    try {
+      result = await db.query(
       'INSERT INTO folders (user_id, name, parent_folder_id, path) VALUES ($1, $2, $3, $4) RETURNING *',
       [req.user.id, name, parentFolderId || null, fullPath]
-    ) 
-    
-    //create physical folder
-    const physicalPath = path.join('/app/storage', fullPath) 
-    //make sure /app/storage wasn't somehow escaped
-    if (!validateStoragePath(physicalPath)) {
-      return res.status(400).json({ error: 'Error making a new folder: Invalid path' }) 
+    )} catch (err) {
+      if ((err as { code?: string }).code === '23505') {
+        return res.status(409).json({ error: 'A folder with that name already exists here' })
+      }
+      throw err
     }
+
     await fs.mkdir(physicalPath, { recursive: true }) 
     
     res.status(201).json({ folder: result.rows[0] }) 
@@ -442,7 +414,7 @@ app.get('/api/folders/all', authenticateToken, async (req: Request, res: Respons
   try {
     const result = await db.query(
       `SELECT id, name, path, parent_folder_id FROM folders
-       WHERE user_id = $1 ORDER BY path`,
+       WHERE user_id = $1 AND deleted = FALSE ORDER BY path`,
       [req.user.id]
     ) 
     res.json({ folders: result.rows }) 
@@ -478,7 +450,7 @@ app.get('/api/folders{/:folderId}', authenticateToken, async (req: Request, res:
     //make sure folder belongs to user and get details
     const folderInfo = await db.query(
       `SELECT * FROM folders 
-      WHERE id = $1 AND user_id = $2`,
+      WHERE id = $1 AND user_id = $2 AND deleted = FALSE`,
       [folderId, req.user.id]
     ) 
     
@@ -490,14 +462,14 @@ app.get('/api/folders{/:folderId}', authenticateToken, async (req: Request, res:
     const [folders, files] = await Promise.all([
       db.query(
         `SELECT * FROM folders 
-        WHERE user_id = $1 AND parent_folder_id = $2
+        WHERE user_id = $1 AND parent_folder_id = $2 AND deleted = FALSE
         ORDER BY name`,
         [req.user.id, folderId]
       ),
       db.query(
         `SELECT * FROM files 
-        WHERE user_id = $1 AND folder_id = $2
-        ORDER BY created_at DESC`,
+        WHERE user_id = $1 AND folder_id = $2 AND deleted = FALSE
+        ORDER BY created_at DESC, id DESC`,
         [req.user.id, folderId]
       )
     ]) 
@@ -529,7 +501,7 @@ const storage = multer.diskStorage({
       if (folderId) {
         //get path of destination folder from database
         const result = await db.query(
-          'SELECT path FROM folders WHERE id = $1 AND user_id = $2',
+          'SELECT path FROM folders WHERE id = $1 AND user_id = $2 AND deleted = FALSE',
           [folderId, userId]
         ) 
         
@@ -600,7 +572,7 @@ async function generateThumbnail(filePath: string, mimeType: string, username: s
 app.post('/api/files/upload', authenticateToken, uploadLimiter, upload.array('files', 15), async (req: Request, res: Response) => {
   const client = await db.connect() 
   try {
-    const { folderId } = req.body as {folderId: number}
+    const folderId = req.query.folderId
     const files = req.files as Express.Multer.File[] | undefined
 
     if (!files || files.length === 0) {
@@ -646,7 +618,7 @@ app.post('/api/files/upload', authenticateToken, uploadLimiter, upload.array('fi
 //============= GET THUMBNAILS ===============================================================================================================================
 app.get('/api/files/:id/thumbnail', authenticateToken, async (req: Request, res: Response) => {
   const result = await db.query(
-    'SELECT thumbnail_path, mime_type FROM files WHERE id = $1 AND user_id = $2',
+    'SELECT thumbnail_path, mime_type FROM files WHERE id = $1 AND user_id = $2 AND deleted = FALSE',
     [req.params.id, req.user.id]
   )
 
@@ -654,9 +626,9 @@ app.get('/api/files/:id/thumbnail', authenticateToken, async (req: Request, res:
     return res.status(404).json({ error: 'No thumbnail available' })
   }
 
-  res.set('Content-Type', 'image/jpeg')
-  res.set('Cache-Control', 'max-age=31536000, immutable') //cache forever —> thumbnails don't change
-  res.sendFile(path.resolve(result.rows[0].thumbnail_path))
+  res.set('Content-Type', 'image/webp')
+  res.set('Cache-Control', 'no-store') //no cache (Demo only)
+  res.sendFile(path.resolve(result.rows[0].thumbnail_path), { cacheControl: false })
 })  
 
 
@@ -667,7 +639,7 @@ app.get('/api/files/:id', authenticateToken, async (req: Request, res: Response)
     if (!Number.isInteger(Number(req.params.id)))
       return res.status(400).json({error: 'Preview file error: The ID is not a valid integer'})
     const result = await db.query(
-      'SELECT * FROM files WHERE id = $1 AND user_id = $2',
+      'SELECT * FROM files WHERE id = $1 AND user_id = $2 AND deleted = FALSE',
       [req.params.id, req.user.id]
     ) 
 
@@ -685,24 +657,22 @@ app.get('/api/files/:id', authenticateToken, async (req: Request, res: Response)
 
 
 // =========== DELETE (move to trash) =======================================================================================================================================
-//remove records from db, keep files in trash folder
 
-//make sure trash folder exists
-const ensureTrashFolder = async (username: string) => {
-  //keep trash outside user directories, in app/storage/trash/userId/
-  //app/storage is mapped to the local folder or the disk that stores the actual data
-  const trashPath = path.join('/app/storage', 'trash', username)
-  try {
-    await fs.mkdir(trashPath, { recursive: true })
-  } catch (err) {
-    console.error('EnsureTrashFoler error: Failed to create trash folder:', err)
-    throw err
-  }
-  return trashPath
-}
+//OLD DELETE LOGIC
+//get some files    files = [file1, file2, file3]
+// copy them to the trash folder (unaccessible by users)
+//open db transaction and delete files from db)
+    // something wrong? (eg. file3 can't be removed, because Demo file) -> rollback. Problem: the files were physically moved, now they show as broken for users
+    // all good? -> close transaction.
 
-async function processFolderRecursive(folderId: number, context: RecursiveDeleteContext): Promise<void> {
-  const {client, userId, trashPath, movedFiles, deletedFolders} = context
+//NEW SOFT DELETE LOGIC
+//tag all the files as deleted=TRUE.
+//display only deleted=FALSE on the frontend
+//cleanup the disk periodically
+
+
+async function processFolderRecursiveSoft(folderId: number, context: RecursiveSoftDeleteContext): Promise<void> {
+  const {client, userId, movedFiles, deletedFolders} = context
 
   //delete all files in this folder
   const filesResult = await client.query(
@@ -713,34 +683,27 @@ async function processFolderRecursive(folderId: number, context: RecursiveDelete
 
   for (const file of filesResult.rows) {
     try {
-      const timestamp = Date.now()
-      const randomStr = Math.random().toString(36).substring(7)
-      const fileExtension = path.extname(file.filename)
-      const baseFileName = path.basename(file.filename, fileExtension)
-      const trashFileName = `${baseFileName}_${timestamp}_${randomStr}${fileExtension}`
-      const trashFilePath = path.join(trashPath, trashFileName)
-
-      await fs.copyFile(file.file_path, trashFilePath)
-      await fs.unlink(file.file_path)
-
-      //delete the thumbnail if there is one
-      if (file.thumbnail_path) {
-        await fs.unlink(file.thumbnail_path).catch(err => 
-          console.error(`Failed to delete thumbnail for file ${file.id}:`, err)
-        )
-      }
 
       await client.query(
-        `DELETE FROM files WHERE id = $1 AND user_id = $2`,
+        `UPDATE files SET deleted = TRUE WHERE id = $1 AND user_id = $2`,
         [file.id, userId]
       )
       
       movedFiles.push({ id: file.id, name: file.filename })
     } catch (err) {
-      console.error(`CONSISTENCY WARNING: DB transaction will rollback but file may have been partially moved to trash. Manual cleanup may be needed. File path: ${file.file_path}, Trash path: ${trashPath}`, err)
       throw err
     }
   }
+
+  try {
+      await client.query(
+        `UPDATE folders SET deleted = TRUE WHERE id = $1 AND user_id = $2`,
+        [folderId, userId]
+      )
+      deletedFolders.push(folderId)
+    } catch (err) {
+      throw err
+    }
 
   //recurse into subfolders
   const subfoldersResult = await client.query(
@@ -750,41 +713,15 @@ async function processFolderRecursive(folderId: number, context: RecursiveDelete
   )
 
   for (const subfolder of subfoldersResult.rows) {
-    await processFolderRecursive(subfolder.id, { client, userId, trashPath, movedFiles, deletedFolders })
-  }
-
-  //fetch path BEFORE deleting the row
-  const thisFolderResult = await client.query(
-    `SELECT path FROM folders WHERE id = $1`,
-    [folderId]
-  )
-  const thisFolderPath = thisFolderResult.rows[0].path
-
-  //delete folder from DB
-  const deleteResult = await client.query(
-    `DELETE FROM folders 
-      WHERE id = $1 AND user_id = $2
-      RETURNING id`,
-    [folderId, userId]
-  )
-
-  //delete physical directory
-  if (deleteResult.rows.length > 0) {
-    deletedFolders.push(folderId)
-    const physicalFolderPath = path.join('/app/storage', thisFolderPath)
-    if (!validateStoragePath(physicalFolderPath)) {
-      throw new Error('Recursive folder processing error: Invalid path')
-    }
-    await fs.rm(physicalFolderPath, { recursive: false }).catch(err =>
-      console.error(`processFolderRecursive error: Failed to remove directory ${physicalFolderPath}:`, err)
-    )
+    await processFolderRecursiveSoft(subfolder.id, { client, userId, movedFiles, deletedFolders })
   }
 }
 
-app.delete('/api/delete', authenticateToken, async (req: Request, res: Response) => {
+app.delete('/api/softdelete', authenticateToken, async (req: Request, res: Response) => {
   const client = await db.connect()
   
   try {
+//validate files and folders
     const { fileIds = [], folderIds = [] } = req.body
     
     if (!Array.isArray(fileIds) || !Array.isArray(folderIds)) {
@@ -794,20 +731,13 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
     if (fileIds.length === 0 && folderIds.length === 0) {
       return res.status(400).json({ error: 'Deletion error: No items selected for deletion' })
     }
-
+//open db transaction
     await client.query('BEGIN')
-
-    const userResult = await client.query(
-      'SELECT username FROM users WHERE id = $1',
-      [req.user.id]
-    )
-    const username = userResult.rows[0].username
-    const trashPath = await ensureTrashFolder(username)
 
     let movedFiles: Array<{ id: number; name: string }> = []
     let deletedFolders: number[] = []
 
-    //process individually selected files
+//select files
     for (const fileId of fileIds) {
       const fileResult = await client.query(
         `SELECT id, file_path, filename, thumbnail_path FROM files 
@@ -823,27 +753,11 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
       }
 
       const file = fileResult.rows[0]
-
-      const timestamp = Date.now()
-      const randomStr = Math.random().toString(36).substring(7)
-      const fileExtension = path.extname(file.filename)
-      const baseFileName = path.basename(file.filename, fileExtension)
-      const trashFileName = `${baseFileName}_${timestamp}_${randomStr}${fileExtension}`
-      const trashFilePath = path.join(trashPath, trashFileName)
-
+//set files to deleted
       try {
-        await fs.copyFile(file.file_path, trashFilePath)
-        await fs.unlink(file.file_path)
-
-        //delete thumbnail if it exists
-        if (file.thumbnail_path) {
-          await fs.unlink(file.thumbnail_path).catch(err => 
-            console.error(`Failed to delete thumbnail for file ${file.id}:`, err)
-          )
-        }
 
         await client.query(
-          `DELETE FROM files WHERE id = $1 AND user_id = $2`,
+          `UPDATE files SET deleted = TRUE WHERE id = $1 AND user_id = $2`,
           [fileId, req.user.id]
         )
 
@@ -855,7 +769,7 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
       }
     }
 
-    //process selected folders recursively
+//select folders
     for (const folderId of folderIds) {
       const folderResult = await client.query(
         `SELECT id, parent_folder_id FROM folders 
@@ -878,10 +792,10 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
           error: 'Deletion error: Cannot delete root folder' 
         })
       }
-
-      await processFolderRecursive(folderId, { client, userId: req.user.id, trashPath, movedFiles, deletedFolders })
+//recursively set folder and subfolders to deleted
+      await processFolderRecursiveSoft(folderId, { client, userId: req.user.id, movedFiles, deletedFolders })
     }
-
+//commit
     await client.query('COMMIT')
 
     res.json({ 
@@ -898,6 +812,7 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
     console.error('Delete error:', err)
     res.status(500).json({ error: 'Deletion error: Failed to move items to trash' })
   } finally {
+//release
     client.release()
   }
 })
@@ -908,7 +823,7 @@ app.delete('/api/delete', authenticateToken, async (req: Request, res: Response)
 app.get('/api/files/:fileId/download', authenticateToken, async (req: Request, res: Response) => {
   try {
     const result = await db.query(
-      'SELECT * FROM files WHERE id = $1 AND user_id = $2',
+      'SELECT * FROM files WHERE id = $1 AND user_id = $2 AND deleted = FALSE',
       [req.params.fileId, req.user.id]
     )
     
@@ -936,186 +851,319 @@ app.get('/api/files/:fileId/download', authenticateToken, async (req: Request, r
 
 
 // ============= MOVE FILES AND FOLDERS ========================================================================================================================================
-app.post('/api/move', authenticateToken, async (req: Request, res: Response) => {
-  const { fileIds = [], folderIds = [], targetFolderId } = req.body
-
-  if (!targetFolderId || !Number.isInteger(Number(targetFolderId))) {
-    return res.status(400).json({ error: 'Moving error: Target folder id not provided or is not an integer' })
+class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message)
   }
+}
 
+//returns a deduplicated array of positive integers, or null if the input is invalid
+function toIdArray(v: unknown): number[] | null {
+  if (!Array.isArray(v)) return null
+  if (!v.every(x => typeof x === 'number' || typeof x === 'string')) return null
+  const ids = v.map(Number)
+  if (!ids.every(n => Number.isInteger(n) && n > 0)) return null
+  return [...new Set(ids)]
+}
+
+//best-effort reversal of disk moves when the transaction fails
+async function undoRenames(renames: Array<{ from: string; to: string }>): Promise<void> {
+  for (const { from, to } of [...renames].reverse()) {
+    await fs.rename(to, from).catch(err =>
+      console.error(`Move rollback error: could not restore ${to} -> ${from}:`, err)
+    )
+  }
+}
+
+app.post('/api/move', authenticateToken, async (req: Request, res: Response) => {
+  //validation before touching the db
+  const { fileIds: rawFileIds = [], folderIds: rawFolderIds = [], targetFolderId } = req.body ?? {}
+
+  const fileIds = toIdArray(rawFileIds)
+  const folderIds = toIdArray(rawFolderIds)
+
+  if (!fileIds || !folderIds) {
+    return res.status(400).json({ error: 'Moving error: fileIds and folderIds must be arrays of integers' })
+  }
   if (fileIds.length === 0 && folderIds.length === 0) {
     return res.status(400).json({ error: 'Moving error: No items to move' })
   }
-  //parse to avoit type errors
-  const targetFolderIdInt = parseInt(targetFolderId)
-  const folderIdsInt = folderIds.map((id: string) => parseInt(id))
+  if (!targetFolderId || !Number.isInteger(Number(targetFolderId))) {
+    return res.status(400).json({ error: 'Moving error: Target folder id not provided or is not an integer' })
+  }
+  const targetFolderIdInt = Number(targetFolderId)
 
-  //get target folder info
+  const renames: Array<{ from: string; to: string }> = [] //disk moves done so far, to undo on failure
+
   try {
-    const targetFolder = await db.query(
-      'SELECT * FROM folders WHERE id = $1 AND user_id = $2',
-      [targetFolderIdInt, req.user.id]
-    )
-
-    if (targetFolder.rows.length === 0) {
-      return res.status(404).json({ error: 'Moving error: Target folder not found' })
-    }
-
-    const targetPath = targetFolder.rows[0].path
-
-    if (folderIds.length > 0) {
-      const foldersToMove = await db.query(
-        `SELECT id, path FROM folders WHERE id = ANY($1::int[]) AND user_id = $2`,
-        [folderIdsInt, req.user.id]
-      )
-
-      for (const folder of foldersToMove.rows) {
-        if (targetPath === folder.path || targetPath.startsWith(folder.path + '/')) {
-          return res.status(400).json({
-            error: `Moving error: Cannot move a folder into itself or one of its subfolders.`
-          })
-        }
-      }
-    }
-
     const client = await db.connect()
+
     try {
       await client.query('BEGIN')
-      //if there are files to move
+
+      //---------- target folder ----------
+      const targetResult = await client.query(
+        'SELECT id, path FROM folders WHERE id = $1 AND user_id = $2 AND deleted = FALSE',
+        [targetFolderIdInt, req.user.id]
+      )
+      if (targetResult.rows.length === 0) {
+        throw new HttpError(404, 'Moving error: Target folder not found')
+      }
+      const targetPath: string = targetResult.rows[0].path
+
+      //---------- files ----------
       if (fileIds.length > 0) {
         const filesCheck = await client.query(
           `SELECT id, file_path, filename FROM files
-           WHERE id = ANY($1::int[]) AND user_id = $2 AND demo_file = FALSE`,
+           WHERE id = ANY($1::int[]) AND user_id = $2 AND demo_file = FALSE AND deleted = FALSE`,
           [fileIds, req.user.id]
         )
 
         if (filesCheck.rows.length !== fileIds.length) {
-          throw new Error('One or more files not found or not owned by user')
+          throw new HttpError(404, 'Moving error: One or more files not found or cannot be moved')
         }
 
         for (const file of filesCheck.rows) {
           const newFilePath = path.join('/app/storage', targetPath, file.filename)
           if (!validateStoragePath(newFilePath)) {
-            return res.status(400).json({ error: 'Moving error: Invalid path' })
+            throw new HttpError(400, 'Moving error: Invalid path')
           }
+          if (file.file_path === newFilePath) continue //already in the target folder
+
           await fs.rename(file.file_path, newFilePath)
+          renames.push({ from: file.file_path, to: newFilePath })
+
           await client.query(
             `UPDATE files SET folder_id = $1, file_path = $2
-             WHERE id = $3`,
-            [targetFolderIdInt, newFilePath, file.id]
+             WHERE id = $3 AND user_id = $4`,
+            [targetFolderIdInt, newFilePath, file.id, req.user.id]
           )
         }
       }
 
+      //---------- folders ----------
       if (folderIds.length > 0) {
         const foldersToMove = await client.query(
-          `SELECT * FROM folders WHERE id = ANY($1::int[]) AND user_id = $2`,
-          [folderIdsInt, req.user.id]
+          `SELECT id, name, path, parent_folder_id FROM folders
+           WHERE id = ANY($1::int[]) AND user_id = $2 AND deleted = FALSE`,
+          [folderIds, req.user.id]
         )
 
+        if (foldersToMove.rows.length !== folderIds.length) {
+          throw new HttpError(404, 'Moving error: One or more folders not found')
+        }
+
+        //checks that apply to the whole selection, before moving anything
         for (const folder of foldersToMove.rows) {
-          const oldPath = folder.path
+          if (folder.parent_folder_id === null) {
+            throw new HttpError(400, 'Moving error: Cannot move a root folder')
+          }
+          if (targetPath === folder.path || targetPath.startsWith(folder.path + '/')) {
+            throw new HttpError(400, 'Moving error: Cannot move a folder into itself or one of its subfolders')
+          }
+          for (const other of foldersToMove.rows) {
+            if (other.id !== folder.id && other.path.startsWith(folder.path + '/')) {
+              throw new HttpError(400, 'Moving error: Cannot move a folder together with one of its subfolders')
+            }
+          }
+        }
+
+        for (const folder of foldersToMove.rows) {
+          const oldPath: string = folder.path
           const newPath = `${targetPath}/${folder.name}`
 
-          await fs.rename(
-            path.join('/app/storage', oldPath),
-            path.join('/app/storage', newPath)
-          )
+          if (oldPath === newPath) continue //already in the target folder
 
-          await client.query(
-            `UPDATE folders SET parent_folder_id = $1, path = $2 WHERE id = $3`,
-            [targetFolderIdInt, newPath, folder.id]
+          const clash = await client.query(
+            `SELECT 1 FROM folders
+             WHERE user_id = $1 AND parent_folder_id = $2 AND name = $3 AND id <> $4 AND deleted = FALSE
+             LIMIT 1`,
+            [req.user.id, targetFolderIdInt, folder.name, folder.id]
           )
+          if (clash.rows.length > 0) {
+            throw new HttpError(409, `Moving error: A folder named "${folder.name}" already exists in the target folder`)
+          }
 
-          //update descendant folder paths with db paths
-          await client.query(
-            `UPDATE folders
-             SET path = $2 || SUBSTRING(path FROM LENGTH($1) + 1)
-             WHERE path LIKE $3 AND user_id = $4`,
-            [oldPath, newPath, `${oldPath}/%`, req.user.id]
-          )
-
-          //update descendant file paths (physical)
           const oldPhysicalPath = path.join('/app/storage', oldPath)
           const newPhysicalPath = path.join('/app/storage', newPath)
+          if (!validateStoragePath(oldPhysicalPath) || !validateStoragePath(newPhysicalPath)) {
+            throw new HttpError(400, 'Moving error: Invalid path')
+          }
 
-          //update descendant file paths with physical paths
+          await fs.rename(oldPhysicalPath, newPhysicalPath)
+          renames.push({ from: oldPhysicalPath, to: newPhysicalPath })
+
+          //the moved folder itself
+          await client.query(
+            `UPDATE folders SET parent_folder_id = $1, path = $2
+             WHERE id = $3 AND user_id = $4`,
+            [targetFolderIdInt, newPath, folder.id, req.user.id]
+          )
+
+          //descendant folders (db paths). Exact prefix compare instead of LIKE, so "_" is not a wildcard
+          await client.query(
+            `UPDATE folders
+             SET path = $2::text || SUBSTRING(path FROM LENGTH($1::text) + 1)
+             WHERE left(path, LENGTH($1::text) + 1) = $1::text || '/' AND user_id = $3`,
+            [oldPath, newPath, req.user.id]
+          )
+
+          //descendant files (physical paths), same exact-prefix approach
           await client.query(
             `UPDATE files
-            SET file_path = $2 || SUBSTRING(file_path FROM LENGTH($1) + 1)
-            WHERE file_path LIKE $3 AND user_id = $4`,
-            [oldPhysicalPath, newPhysicalPath, `${oldPhysicalPath}/%`, req.user.id]
+             SET file_path = $2::text || SUBSTRING(file_path FROM LENGTH($1::text) + 1)
+             WHERE left(file_path, LENGTH($1::text) + 1) = $1::text || '/' AND user_id = $3`,
+            [oldPhysicalPath, newPhysicalPath, req.user.id]
           )
         }
       }
 
       await client.query('COMMIT')
-      res.json({ message: 'Items moved successfully' })
-
     } catch (err) {
-      await client.query('ROLLBACK')
+      await client.query('ROLLBACK').catch(e => console.error('Move ROLLBACK error:', e))
+      await undoRenames(renames) //put files/folders back where they were on disk
       throw err
     } finally {
       client.release()
     }
 
+    res.json({ message: 'Items moved successfully' })
   } catch (err) {
+    if (err instanceof HttpError) {
+      return res.status(err.status).json({ error: err.message })
+    }
+    const code = (err as { code?: string }).code
+    if (code === '23505') {
+      //the unique index caught a race the clash query missed
+      return res.status(409).json({ error: 'Moving error: A folder with that name already exists in the target' })
+    }
+    if (code === 'ENOTEMPTY' || code === 'EEXIST') {
+      //target path still holds the directory of a soft-deleted folder that wasn't purged yet
+      return res.status(409).json({ error: 'Moving error: Target location is still being cleaned up, try again later' })
+    }
     console.error('Move error:', err)
     res.status(500).json({ error: 'Moving error: Failed to move items' })
   }
 })
 
+// ============ DEMO CLEANUP =====================================================================================================================================================
+//Every 30 mins on the Demo I remove all uploaded files, keep only the ones I selected (Demo_file=TRUE), force every user to logout.
+//I separated disk operations from db operations.
 
+// ============================ CLEAN DB ==========================================================================================================================
 
-// ============= DEMO CLEANUP CRON =====================================================================================================================
-async function wipeDemoUploads(): Promise<void> {
+//Delete from db files and folders that are not part of the demo, have been deleted by users and (for folders) are not the user's Root folder.
+async function cleanDemoDb(): Promise<void> {
   const client = await db.connect()
   try {
-    console.log('[Cron] Starting demo cleanup:', new Date().toISOString())
+    console.log('[Cron] Starting DB cleanup:', new Date().toISOString())
 
-    //get all files
+//delete files from db
+    const deletedFiles = await client.query(
+      `DELETE FROM files WHERE demo_file = FALSE`
+    )
+    const deletedFilesNr = deletedFiles.rowCount ?? 0
+
+//remove folders from db
+    const deletedFolders = await client.query(
+      `DELETE FROM folders WHERE parent_folder_id IS NOT NULL`
+    )
+
+    const deletedFoldersNr = deletedFolders.rowCount ?? 0
+
+    console.log(`[Cron] DB cleanup done. Deleted ${deletedFilesNr} files rows and ${deletedFoldersNr} folders rows.`)
+  } catch (err) {
+    console.error('[Cron] Cleanup failed:', err)
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ============= PERMANENTLY DELETE FILES FROM DISK ==============================================================================================================
+
+//Delete from disk files and folders that are not part of the Demo.
+async function cleanDemoDisk(): Promise<void> {
+  const client = await db.connect()
+  try {
+    console.log('[Cron] Starting disk cleanup:', new Date().toISOString())
+
+//get all files
     const filesResult = await client.query(
       `SELECT id, file_path, thumbnail_path FROM files WHERE demo_file = FALSE`
     )
 
-    //delete from disk
+//delete from disk
     let deletedCount = 0
     for (const file of filesResult.rows) {
       try {
-        await fs.unlink(file.file_path).catch(() => {})
+        await fs.unlink(file.file_path)
         if (file.thumbnail_path) {
-          await fs.unlink(file.thumbnail_path).catch(() => {})
+          await fs.unlink(file.thumbnail_path)
         }
-      } catch (err) {
-        console.error(`[Cron] Failed to delete file ${file.id}:`, err)
+        deletedCount++
+      } catch (err:any) {
+        //If the file already doesn't exist is fine, else throw an error
+        if (err.code !== 'ENOENT') {
+          console.error(`[Cron] Failed to delete file ${file.id}:`, err)
+          throw err
+        }
       }
     }
 
-    //delete from db
-    const deleteResult = await client.query(
-      `DELETE FROM files WHERE demo_file = FALSE`
-    )
-    deletedCount = deleteResult.rowCount ?? 0
-
-    //get folders (except root demo folder)
+//get all folders (except root demo folder)
     const foldersResult = await client.query(
       `SELECT path FROM folders WHERE parent_folder_id IS NOT NULL`
     )
     //remove from disk
     for (const folder of foldersResult.rows) {
-      const physicalPath = path.join('/app/storage', folder.path)
-      await fs.rm(physicalPath, { recursive: true, force: true }).catch(() => {})
+      try {
+        const physicalPath = path.join('/app/storage', folder.path)
+        await fs.rm(physicalPath, { recursive: true, force: true })
+      } catch (err) {
+        console.error(`[Cron] Failed to delete folder ${folder.path}:`, err)
+      }
     }
-    //remove from db
-    await client.query(
-      `DELETE FROM folders WHERE parent_folder_id IS NOT NULL`
-    )
 
-    console.log(`[Cron] Cleanup done. Deleted ${deletedCount} files.`)
+    console.log(`[Cron] Cleanup done. Deleted ${deletedCount} files and unused folders.`)
   } catch (err) {
     console.error('[Cron] Cleanup failed:', err)
+    throw err
   } finally {
     client.release()
+  }
+}
+
+// =========================== FORCE LOGOUT =========================================================================================
+
+async function forceLogout(): Promise<void> {
+  const client = await db.connect()
+  try {
+    console.log('[Cron] Logging users out:', new Date().toISOString())
+
+    await client.query(
+      `DELETE FROM refresh_tokens`
+    )
+
+    console.log(`[Cron] All users logged out.`)
+  } catch (err) {
+    console.error('[Cron] Logouts failed:', err)
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ============= DEMO CLEANUP CRON =====================================================================================================================
+//Order matters.
+async function cleanDemo(): Promise<void> {
+  try {
+    await cleanDemoDisk()
+    await cleanDemoDb()
+    await forceLogout()
+  } catch (err) {
+    console.error('[Cron] Demo cleanup failed:', err)
+    throw err
   }
 }
 
@@ -1142,29 +1190,117 @@ app.get('/api/next-wipe', (req: Request, res: Response) => {
 //  0 9 * * 1      → every Monday at 9am
 
 
-async function forceLogout(): Promise<void> {
+cron.schedule('*/30 * * * *', () => {
+  nextWipeTime = new Date(Date.now() + 30 * 60 * 1000) //30min
+  cleanDemo().catch(err => console.error('[Cron] cleanDemo failed', err))
+})
+
+
+// ============ APP CLEANUP =====================================================================================================================================================
+//This never happens on the Demo, only in the actual App.
+//Every 24 hrs I remove all the files the user deleted from both disk and db.
+//I separated disk operations from db operations.
+
+// ============================ CLEAN DB ==========================================================================================================================
+
+//Delete from db files and folders that users deleted.
+async function cleanDb(): Promise<void> {
   const client = await db.connect()
   try {
-    console.log('[Cron] Logging users out:', new Date().toISOString())
+    console.log('[Cron] Starting DB cleanup:', new Date().toISOString())
 
-    const deleteResult = await client.query(
-      `DELETE FROM refresh_tokens`
+//delete files from db
+    const deletedFiles = await client.query(
+      `DELETE FROM files WHERE deleted = TRUE`
+    )
+    const deletedFilesNr = deletedFiles.rowCount ?? 0
+
+//remove folders from db
+    const deletedFolders = await client.query(
+      `DELETE FROM folders WHERE parent_folder_id IS NOT NULL AND deleted = TRUE`
     )
 
-    console.log(`[Cron] All users logged out.`)
+    const deletedFoldersNr = deletedFolders.rowCount ?? 0
+
+    console.log(`[Cron] DB cleanup done. Deleted ${deletedFilesNr} files rows and ${deletedFoldersNr} folders rows.`)
   } catch (err) {
-    console.error('[Cron] Logouts failed:', err)
+    console.error('[Cron] Cleanup failed:', err)
+    throw err
   } finally {
     client.release()
   }
 }
 
-cron.schedule('*/30 * * * *', () => {
-  nextWipeTime = new Date(Date.now() + 30 * 60 * 1000)
-  wipeDemoUploads()
-  forceLogout()
-})
+// ============= PERMANENTLY DELETE FILES FROM DISK ==============================================================================================================
 
+//Delete from disk files and folders that users deleted.
+
+async function cleanDisk(): Promise<void> {
+  const client = await db.connect()
+  try {
+    console.log('[Cron] Starting disk cleanup:', new Date().toISOString())
+
+    //1) files: remove each file and its thumbnail independently
+    const rm = (p: string) =>
+      fs.rm(p, { force: true }).catch(e => console.error('[Cron] rm failed', p, e))
+
+    const filesResult = await client.query(
+      `SELECT id, file_path, thumbnail_path FROM files WHERE deleted = TRUE`
+    )
+    for (const file of filesResult.rows) {
+      await rm(file.file_path)
+      if (file.thumbnail_path) await rm(file.thumbnail_path)
+    }
+
+    //2) folders: only remove empty directories nobody live is using
+    const liveRes = await client.query(`SELECT path FROM folders WHERE deleted = FALSE`)
+    const livePaths = new Set<string>(liveRes.rows.map(r => r.path))
+
+    const deadRes = await client.query(
+      `SELECT path FROM folders WHERE parent_folder_id IS NOT NULL AND deleted = TRUE`
+    )
+    const deadPaths: string[] = deadRes.rows
+      .map(r => r.path as string)
+      .filter(p => !livePaths.has(p))
+      .sort((a, b) => b.length - a.length) //children before parents
+
+    for (const p of deadPaths) {
+      const physical = path.join('/app/storage', p)
+      if (!validateStoragePath(physical)) continue
+      try {
+        await fs.rmdir(physical)
+      } catch (e: any) {
+        if (e.code !== 'ENOENT' && e.code !== 'ENOTEMPTY') {
+          console.error('[Cron] rmdir failed', p, e)
+        }
+      }
+    }
+
+    console.log(`[Cron] Disk cleanup done. Processed ${filesResult.rows.length} files and ${deadPaths.length} folders.`)
+  } catch (err) {
+    console.error('[Cron] Disk cleanup failed:', err)
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ============= ROUTINE CLEANUP CRON =====================================================================================================================
+
+async function cleanApp(): Promise<void> {
+  try {
+    await cleanDisk()
+    await cleanDb()
+  } catch (err) {
+    console.error('[Cron] Disk cleanup failed:', err)
+    throw err
+  }
+}
+
+//NOT ON DEMO
+//cron.schedule('0 3 * * *', () => {
+//  cleanApp().catch(err => console.error('[Cron] cleanApp failed', err))
+//})
 
 
 // ============= TEST =============================================================================================================================================

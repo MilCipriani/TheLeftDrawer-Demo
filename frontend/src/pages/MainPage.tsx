@@ -24,6 +24,7 @@ interface Folder {
   parent_folder_id: number | null
   path: string
   created_at: string
+  deleted: boolean
 }
 
 interface NasFile { //not "File" to avoid shadowing the browser's built-in "File" type
@@ -38,6 +39,7 @@ interface NasFile { //not "File" to avoid shadowing the browser's built-in "File
   mime_type: string
   created_at: string
   updated_at: string
+  deleted: boolean
 }
 
 interface FolderContentsResponse {
@@ -59,6 +61,7 @@ export default function Home() {
   const [folders, setFolders] = useState<Folder[]>([])
   const [files, setFiles] = useState<NasFile[]>([])
   const [loading, setLoading] = useState<boolean>(true)
+  const visibleFiles = files.filter(file => !file.deleted)
 
   //main menu
   const [menuToggler, setMenuToggler] = useState<boolean>(false)
@@ -166,6 +169,7 @@ export default function Home() {
 
         if (lastWipeTimeRef.current && new Date(data.nextWipeAt) > new Date(lastWipeTimeRef.current)) {
           addToast('Demo data has been wiped. Please refresh the page.')
+          lastWipeTimeRef.current = null
           return //stop updating the timer
         }
 
@@ -287,21 +291,16 @@ export default function Home() {
   const handleFileClick = (file: NasFile) => {
     if (selectionMode) {
       setSelectedFiles(prev => {
-        const newSet = new Set(prev)
-        if (newSet.has(file.id)) {
-          newSet.delete(file.id)
-        } else {
-          newSet.add(file.id)
-        }
-        return newSet
+        const next = new Set(prev)
+        if (next.has(file.id)) next.delete(file.id)
+        else next.add(file.id)
+        return next
       })
-    } else {
-      //open preview if it's previewable (img)
-      const previewIdx = files.findIndex(f => f.id === file.id)
-      if (previewIdx !== -1) {
-        setPreviewIndex(previewIdx)
-      }
+      return
     }
+
+    const idx = visibleFiles.findIndex(f => f.id === file.id)
+    if (idx !== -1) setPreviewIndex(idx)
   }
 
   //delete selected items
@@ -310,7 +309,7 @@ export default function Home() {
     const folderIds = Array.from(selectedFolders)
 
     try {
-      const response = await fetchWithAuth('/api/delete', {
+      const response = await fetchWithAuth('/api/softdelete', {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -343,17 +342,20 @@ export default function Home() {
     }
   }
 
-  const handlePreviewDelete = (fileId: string) => {
-  const newFiles = files.filter(f => f.id !== fileId)
-    setFiles(newFiles)
+const handlePreviewDelete = (fileId: string) => {
+  const deletedIndex = visibleFiles.findIndex(file => file.id === fileId)
+  if (deletedIndex === -1) return
 
-    if (newFiles.length === 0) {
-      setPreviewIndex(null) //no files left, close modal
-    } else {
-      //clamp index so it doesn't go out of bounds after deletion
-      setPreviewIndex(i => Math.min(i!, newFiles.length - 1))
-    }
-  }
+  const remaining = visibleFiles.length - 1
+
+  setFiles(prev => prev.filter(file => file.id !== fileId))
+
+  setPreviewIndex(current => {
+    if (current === null || remaining === 0) return null
+    if (deletedIndex < current) return current - 1
+    return Math.min(current, remaining - 1)
+  })
+}
 
 
   return (
@@ -450,7 +452,11 @@ export default function Home() {
           <p className=''>You are about to permanently delete all the selected items.</p>
           <p className=''>Are you sure?</p>
           <div className='flex items-center justify-between w-full'>
-            <button className='text-red-500 cursor-pointer' onClick={() => {setShowDeleteConfirm(false)}}>Cancel</button>
+            <button className='text-red-500 cursor-pointer' onClick={() => {
+                                                                setShowDeleteConfirm(false)
+                                                                setSelectedFiles(new Set())
+                                                                setSelectedFolders(new Set())
+                                                              }}>Cancel</button>
             <button className='cursor-pointer'onClick={() => {handleDelete(); setShowDeleteConfirm(false)}}>Yes</button>
           </div>
         </div>
@@ -482,7 +488,7 @@ export default function Home() {
                       sm:grid-cols-[repeat(auto-fill,minmax(128px,1fr))]
                       gap-1 w-full">
 
-        {folders.map(folder => (
+        {folders.filter(folder => folder.deleted === false).map(folder => (
           <div
             onClick={() => handleFolderClick(folder)}
             key={folder.id}
@@ -500,7 +506,7 @@ export default function Home() {
         ))}
 
 
-        {files.map(file => (
+        {visibleFiles.map(file => (
           <div
             key={file.id}
             onClick={() => handleFileClick(file)}
@@ -520,7 +526,7 @@ export default function Home() {
           }
           </div>
         ))}
-        {folders.length === 0 && files.length === 0 &&(
+        {folders.length === 0 && visibleFiles.length === 0 &&(
           <p className='text-black text-start col-span-2'>This folder is empty :(</p>
         )}
         
@@ -529,10 +535,12 @@ export default function Home() {
 
       {previewIndex !== null && (
         <PreviewModal
-          files={files}
-          startIndex={previewIndex}
+          files={visibleFiles}
+          currentIndex={previewIndex}
           onClose={() => setPreviewIndex(null)}
           onDelete={handlePreviewDelete}
+          onNavigate={setPreviewIndex}
+          onError={addToast}
         />
       )}
 

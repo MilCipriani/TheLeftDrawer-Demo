@@ -1,18 +1,59 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest'
 import request from 'supertest'
 import jwt from 'jsonwebtoken'
+import fs from 'fs/promises'
+import path from 'path'
 import { app, db } from '../../app'
 
+const ADMIN_SECRET = process.env.ADMIN_SECRET as string
+const JWT_SECRET = process.env.JWT_SECRET as string
+
+//removes a test user from db and disk. Children first, because the FKs are not CASCADE.
+//Safe to call when the user doesn't exist.
+async function deleteTestUser(username: string): Promise<void> {
+  const client = await db.connect()
+  try {
+    await client.query('BEGIN')
+
+    const u = await client.query('SELECT id FROM users WHERE username = $1', [username])
+    if (u.rows.length > 0) {
+      const id = u.rows[0].id
+      await client.query('DELETE FROM refresh_tokens WHERE user_id = $1', [id])
+      await client.query('DELETE FROM files WHERE user_id = $1', [id])
+      await client.query('DELETE FROM folders WHERE user_id = $1', [id])
+      await client.query('DELETE FROM users WHERE id = $1', [id])
+    }
+
+    await client.query('COMMIT')
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw err
+  } finally {
+    client.release()
+  }
+
+  //register creates /app/storage/<username>, uploads may create thumbnails/<username>
+  await fs.rm(path.join('/app/storage', username), { recursive: true, force: true })
+  await fs.rm(path.join('/app/storage/thumbnails', username), { recursive: true, force: true })
+}
+
+async function registerUser(username: string, password: string) {
+  return request(app)
+    .post('/api/auth/register')
+    .set('x-admin-secret', ADMIN_SECRET)
+    .send({ username, password })
+}
+
+
+
 describe('REGISTRATION: POST /api/auth/register', () => {
-  afterAll(async () => {
-    await db.query('DELETE FROM users WHERE username = $1', ['testuser_registration'])
-  })
+  const testUser = 'testuser_registration'
+
+  beforeAll(() => deleteTestUser(testUser)) //clear leftovers from a crashed run
+  afterAll(() => deleteTestUser(testUser))
 
   it('registers a new user with valid admin secret', async () => {
-    const res = await request(app)
-      .post('/api/auth/register')
-      .set('x-admin-secret', process.env.ADMIN_SECRET as string)
-      .send({ username: 'testuser_registration', password: 'password123' })
+    const res = await registerUser(testUser, 'password123')
 
     expect(res.status).toBe(201)
   })
@@ -26,10 +67,7 @@ describe('REGISTRATION: POST /api/auth/register', () => {
   })
 
   it('rejects registration with a duplicated username', async () => {
-    const res = await request(app)
-      .post('/api/auth/register')
-      .set('x-admin-secret', process.env.ADMIN_SECRET as string)
-      .send({ username: 'testuser_registration', password: 'password123' })
+    const res = await registerUser(testUser, 'password123')
 
     expect(res.status).toBe(409)
   })
@@ -42,15 +80,11 @@ describe('LOGIN: POST /api/auth/login', () => {
   const testPassword = 'password123'
 
   beforeAll(async () => {
-    await request(app)
-    .post('/api/auth/register')
-    .set('x-admin-secret', process.env.ADMIN_SECRET as string)
-    .send({ username: testUser, password: testPassword })
+    await deleteTestUser(testUser)
+    await registerUser(testUser, testPassword)
   })
 
-  afterAll(async () => {
-    await db.query('DELETE FROM users WHERE username = $1', ['testuser_login'])
-  })
+  afterAll(() => deleteTestUser(testUser))
 
   it('rejects login with incorrect password', async () => {
     const res = await request(app)
@@ -90,10 +124,8 @@ describe('AUTH TOKEN MIDDLEWARE: GET /api/folders/all', () => {
   let validToken: string
 
   beforeAll(async () => {
-    await request(app)
-      .post('/api/auth/register')
-      .set('x-admin-secret', process.env.ADMIN_SECRET as string)
-      .send({ username: testUser, password: testPassword })
+    await deleteTestUser(testUser)
+    await registerUser(testUser, testPassword)
 
     const loginRes = await request(app)
       .post('/api/auth/login')
@@ -102,9 +134,7 @@ describe('AUTH TOKEN MIDDLEWARE: GET /api/folders/all', () => {
     validToken = loginRes.body.accessToken
   })
 
-  afterAll(async () => {
-    await db.query('DELETE FROM users WHERE username = $1', [testUser])
-  })
+  afterAll(() => deleteTestUser(testUser))
 
   it('rejects requests with no token', async () => {
     const res = await request(app).get('/api/folders/all')
@@ -134,8 +164,8 @@ describe('AUTH TOKEN MIDDLEWARE: GET /api/folders/all', () => {
   it('rejects an expired token', async () => {
     const expiredToken = jwt.sign(
       { sub: 1 },
-      process.env.JWT_SECRET as string,
-      { algorithm: 'HS256', expiresIn: '-10s' } // already expired
+      JWT_SECRET,
+      { algorithm: 'HS256', expiresIn: '-10s' }
     )
 
     const res = await request(app)
@@ -148,8 +178,8 @@ describe('AUTH TOKEN MIDDLEWARE: GET /api/folders/all', () => {
 
   it('rejects a validly-signed token for a user that no longer exists', async () => {
     const tokenForGhostUser = jwt.sign(
-      { sub: 999999 }, // an id that shouldn't exist
-      process.env.JWT_SECRET as string,
+      { sub: 999999 },
+      JWT_SECRET,
       { algorithm: 'HS256', expiresIn: '5m' }
     )
 
@@ -174,5 +204,5 @@ describe('AUTH TOKEN MIDDLEWARE: GET /api/folders/all', () => {
 
 
 afterAll(async () => {
-    await db.end()
-  })
+  await db.end()
+})
