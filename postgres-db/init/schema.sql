@@ -9,31 +9,30 @@ CREATE TABLE IF NOT EXISTS users (
 --FOLDERS
 CREATE TABLE IF NOT EXISTS folders (
   id SERIAL PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id),
   name VARCHAR(255) NOT NULL,
-  parent_folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE, --null on main user folder
+  parent_folder_id INTEGER REFERENCES folders(id), --null on main user folder
   path VARCHAR(500),
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TIMESTAMP DEFAULT NOW(),
+  deleted BOOLEAN DEFAULT FALSE NOT NULL
 );
 
 --FILES
 CREATE TABLE IF NOT EXISTS files (
   id SERIAL PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id),
   filename VARCHAR(255) NOT NULL,
   original_filename VARCHAR(255) NOT NULL,
   file_path VARCHAR(500) NOT NULL,
   file_size BIGINT NOT NULL,
-  folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+  folder_id INTEGER REFERENCES folders(id),
   mime_type VARCHAR(100),
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW(),
   thumbnail_path VARCHAR(500) DEFAULT NULL,
-  demo_file BOOLEAN DEFAULT FALSE
+  demo_file BOOLEAN DEFAULT FALSE,
+  deleted BOOLEAN DEFAULT FALSE NOT NULL
 );
-
---TODO: soft delete
---deleted_at TIMESTAMP DEFAULT NULL  (NULL = not deleted, NOW() = deleted)
 
 
 --REFRESH TOKENS
@@ -52,6 +51,8 @@ CREATE INDEX IF NOT EXISTS idx_folders_user_id ON folders(user_id);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_folder_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
+--partial index to allow delete and immediate same-name folder recreation
+CREATE UNIQUE INDEX IF NOT EXISTS live_folders_uniq_id ON folders (user_id, parent_folder_id, name) WHERE deleted = FALSE;
 
 
 --TRIGGER TO AUTO-UPDATE THE updated_at COLUMN WHEN files ARE UPDATED

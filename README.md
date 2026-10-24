@@ -13,7 +13,7 @@ Credentials:
 
 ## Why I built this
 
-We were storing all our family pictures on random SSDs. Every time my non-technical mother wanted to see them we had to sit at the PC and swap between various disks. Now she can access all of her files whenever she wants, without privacy concerns, without having to pay a monthly fee, but most importantly with an interface that is simple, straightforward and that she will never struggle to use.
+We were storing all our family pictures on random SSDs. Every time we wanted to see them we had to sit at the PC and swap between various disks. Now we can access all of our files whenever we want, without privacy concerns, without having to pay a monthly fee, but most importantly with an interface that is simple, straightforward and that a non-technical user will never struggle to use.
 
 ## Architecture
 
@@ -52,11 +52,12 @@ Access tokens live in module scope outside React - not localStorage (XSS risk), 
 ### File operations and consistency
 
 Upload, delete, and move operations use PostgreSQL transactions.
-The delete endpoint moves files to a trash folder before removing DB records - if the filesystem operation fails, the transaction rolls back. True atomicity between the DB and filesystem isn't possible, so partial failures log an explicit consistency warning. The roadmap includes a soft-delete pattern to handle this more cleanly. The move endpoint uses fs.rename() which can silently fail across filesystem boundaries - known limitation documented in the roadmap.
+The softDelete endpoint tags files and folders that need to be deleted. A periodic cron job cleans the disk and the database in a subsequent order, to make sure the two stay in sync. A trash folder for users is a minor change that I added to the roadmap.
+The move endpoint uses fs.rename() which can silently fail across filesystem boundaries. This is a known limitation, also documented in the roadmap.
 
 Every endpoint that constructs a physical path makes sure it starts with /app/storage/ before any operation, on top of regex checks, preventing path traversal attacks.
 
-The schema uses cascading deletes so removing a user or folder cleans up all child records automatically. Indexes are placed on foreign keys and frequently queried columns. An `updated_at` trigger keeps file metadata current without relying on application-level updates.
+The schema includes Indexes, placed on foreign keys and frequently queried columns. An `updated_at` trigger keeps file metadata current without relying on application-level updates.
 ### Frontend performance
 
 Thumbnails are generated server-side with Sharp (200x200 WebP) on upload. 
@@ -137,8 +138,10 @@ The script is idempotent - safe to re-run, it skips files already in the databas
 
 - [ ] 401 on page load - normal JWT behaviour, need to add a non-httpOnly non-sensitive cookie to manage refresh 
 - [ ] No option for users to change their password (add verification)
-- [ ] Move and Delete endpoints could fail, especially if a separate disk is used for storage (`fs.rename()` in the move endpoint can silently fail across filesystem boundaries)
-	- [ ] Implement soft delete and do a move endpoint revision
+- [ ] Move endpoint could fail, especially if a separate disk is used for storage (`fs.rename()` can silently fail across filesystem boundaries)
+	- [ ] Move endpoint revision
+	- [x] Implement soft delete
+	- [ ] Trash folder for users
 - [ ] Test coverage is currently focused on auth (registration, login, middleware) and input validation
 - [ ] Currently I have no observability, all the checks are manual
 	- [ ] Pino, Grafana, Prometheus could all be valid options
